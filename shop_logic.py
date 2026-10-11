@@ -1,0 +1,318 @@
+"""Логика магазина без зависимостей от aiohttp и aiogram.
+
+Здесь: проверка подписи Telegram Mini App (initData), работа с медиа товаров
+и все операции с базой SQLite (товары, отслеживание заказов, «кто интересовался»).
+"""
+import hashlib
+import hmac
+import json
+import re
+import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl, quote
+
+MSK = timezone(timedelta(hours=3))
+MAX_MEDIA = 10
+LOCAL_NAME_RE = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]{2,5}$")
+MEDIA_PREFIXES = ("p:", "v:", "lp:", "lv:")
+
+
+# ---------------------------------------------------------------- Telegram auth
+def validate_init_data(init_data: str, token: str, max_age: int = 86400):
+    """Проверяет подпись initData из Telegram Mini App.
+    Возвращает словарь пользователя или None, если подпись неверна или устарела."""
+    if not init_data or not token:
+        return None
+    try:
+        parsed = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = parsed.pop("hash", None)
+        if not received_hash:
+            return None
+        check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+        secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+        calc = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc, received_hash):
+            return None
+        if time.time() - int(parsed.get("auth_date", "0")) > max_age:
+            return None
+        user = json.loads(parsed.get("user", "{}"))
+        if not isinstance(user, dict) or "id" not in user:
+            return None
+        return user
+    except Exception:
+        return None
+
+
+# ------------------------------------------------------------------- helpers
+def split_sizes(sizes: str):
+    return [s.strip()[:20] for s in (sizes or "").replace(";", ",").split(",") if s.strip()]
+
+
+def parse_price(value) -> float:
+    try:
+        t = str(value).replace(",", ".").replace(" ", "").replace("\u00a0", "")
+        price = float(t)
+    except (TypeError, ValueError):
+        raise ValueError("Введите цену числом больше нуля")
+    if not (0 < price < 100_000_000):
+        raise ValueError("Введите цену числом больше нуля")
+    return round(price, 2)
+
+
+def normalize_media(raw: str):
+    """Строка из БД -> список элементов.
+    p:/v: = фото/видео из Telegram (file_id), lp:/lv: = файлы, загруженные через приложение.
+    Старые записи без префикса считаются фото из Telegram."""
+    items = []
+    for x in (raw or "").split(","):
+        x = x.strip()
+        if not x:
+            continue
+        items.append(x if x.startswith(MEDIA_PREFIXES) else "p:" + x)
+    return items
+
+
+def media_kind(item: str) -> str:
+    return "video" if item.startswith(("v:", "lv:")) else "photo"
+
+
+def media_json(item: str) -> dict:
+    return {"type": media_kind(item), "url": "/media/" + quote(item, safe="")}
+
+
+def now_msk() -> str:
+    return datetime.now(MSK).strftime("%d.%m %H:%M")
+
+
+# ---------------------------------------------------------------------- Shop
+class Shop:
+    def __init__(self, db_path: str, currency_sign: str = "₽"):
+        self.db_path = db_path
+        self.currency_sign = currency_sign
+
+    def connect(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def init_schema(self):
+        conn = self.connect()
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT, user_id TEXT, item_name TEXT, status TEXT
+            );
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                price REAL NOT NULL,
+                sizes TEXT DEFAULT '',
+                photo_id TEXT DEFAULT '',
+                active INTEGER DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, username TEXT, full_name TEXT,
+                product_id INTEGER, product_name TEXT, created TEXT
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    # ----------------------------------------------------------- products
+    def money(self, x: float) -> str:
+        s = f"{x:.2f}".rstrip("0").rstrip(".")
+        return f"{s} {self.currency_sign}"
+
+    def product_dict(self, row) -> dict:
+        keys = normalize_media(row["photo_id"])
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"] or "",
+            "price": row["price"],
+            "price_text": self.money(row["price"]),
+            "sizes": split_sizes(row["sizes"]),
+            "media": [media_json(i) for i in keys],
+            "media_keys": keys,
+            "active": bool(row["active"]),
+        }
+
+    def get_product(self, pid: int):
+        conn = self.connect()
+        row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+        conn.close()
+        return row
+
+    def list_products(self, include_hidden: bool = False):
+        conn = self.connect()
+        sql = "SELECT * FROM products" + ("" if include_hidden else " WHERE active = 1") + " ORDER BY id DESC"
+        rows = conn.execute(sql).fetchall()
+        conn.close()
+        return [self.product_dict(r) for r in rows]
+
+    @staticmethod
+    def clean_fields(name, description, price, sizes):
+        name = (name or "").strip()[:100]
+        if not name:
+            raise ValueError("Введите название товара")
+        description = (description or "").strip()[:600]
+        price = parse_price(price)
+        sizes = ", ".join(split_sizes(sizes or ""))
+        return name, description, price, sizes
+
+    def create_product(self, name, description, price, sizes, media_items):
+        name, description, price, sizes = self.clean_fields(name, description, price, sizes)
+        if len(media_items) > MAX_MEDIA:
+            raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
+        conn = self.connect()
+        cur = conn.execute(
+            "INSERT INTO products (name, description, price, sizes, photo_id, active) VALUES (?, ?, ?, ?, ?, 1)",
+            (name, description, price, sizes, ",".join(media_items)),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM products WHERE id = ?", (cur.lastrowid,)).fetchone()
+        conn.close()
+        return row
+
+    def update_product(self, pid, name, description, price, sizes, media_items):
+        name, description, price, sizes = self.clean_fields(name, description, price, sizes)
+        if len(media_items) > MAX_MEDIA:
+            raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
+        conn = self.connect()
+        conn.execute(
+            "UPDATE products SET name=?, description=?, price=?, sizes=?, photo_id=? WHERE id=?",
+            (name, description, price, sizes, ",".join(media_items), pid),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+        conn.close()
+        return row
+
+    def toggle_product(self, pid):
+        conn = self.connect()
+        conn.execute("UPDATE products SET active = 1 - active WHERE id = ?", (pid,))
+        conn.commit()
+        row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
+        conn.close()
+        return row
+
+    def delete_product(self, pid):
+        """Возвращает список медиа удалённого товара или None, если товара нет."""
+        row = self.get_product(pid)
+        if not row:
+            return None
+        conn = self.connect()
+        conn.execute("DELETE FROM products WHERE id = ?", (pid,))
+        conn.commit()
+        conn.close()
+        return normalize_media(row["photo_id"])
+
+    # -------------------------------------------------------------- leads
+    def add_lead(self, user_id, username, full_name, product_id, size=""):
+        """Записывает, что клиент нажал «Написать менеджеру». Возвращает (товар, название с размером)."""
+        row = self.get_product(product_id)
+        if not row or not row["active"]:
+            return None
+        size = (size or "").strip()
+        if size and size not in split_sizes(row["sizes"]):
+            size = ""
+        label = row["name"] + (f" (размер {size})" if size else "")
+        conn = self.connect()
+        conn.execute(
+            "INSERT INTO leads (user_id, username, full_name, product_id, product_name, created) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, username or "", full_name or "", product_id, label, now_msk()),
+        )
+        conn.commit()
+        conn.close()
+        return row, label
+
+    def list_leads(self, limit: int = 100):
+        conn = self.connect()
+        rows = conn.execute("SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    # ----------------------------------------------------------- tracking
+    @staticmethod
+    def _order_dict(r):
+        return {"id": r["id"], "order_id": r["order_id"], "user_id": r["user_id"],
+                "item_name": r["item_name"], "status": r["status"]}
+
+    def search_tracking(self, q: str, by_user: bool = True):
+        """Поиск посылок по коду заказа и (если by_user) по ID клиента."""
+        conn = self.connect()
+        if by_user:
+            rows = conn.execute(
+                "SELECT * FROM orders WHERE order_id = ? COLLATE NOCASE OR user_id = ? ORDER BY id DESC", (q, q)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM orders WHERE order_id = ? COLLATE NOCASE ORDER BY id DESC", (q,)
+            ).fetchall()
+        conn.close()
+        return [self._order_dict(r) for r in rows]
+
+    def list_orders(self, limit: int = 500):
+        conn = self.connect()
+        rows = conn.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        conn.close()
+        return [self._order_dict(r) for r in rows]
+
+    def get_order(self, rowid: int):
+        conn = self.connect()
+        r = conn.execute("SELECT * FROM orders WHERE id = ?", (rowid,)).fetchone()
+        conn.close()
+        return self._order_dict(r) if r else None
+
+    def add_order(self, order_id, user_id, item_name, status):
+        order_id = (order_id or "").strip()[:40]
+        user_id = (str(user_id) if user_id is not None else "").strip() or "0"
+        item_name = (item_name or "").strip()[:120]
+        status = (status or "").strip()[:200]
+        if not order_id:
+            raise ValueError("Введите код заказа")
+        if not user_id.isdigit():
+            raise ValueError("ID клиента — это число (или 0, если ID нет)")
+        if not item_name:
+            raise ValueError("Выберите товар или введите название")
+        if not status:
+            raise ValueError("Введите статус")
+        conn = self.connect()
+        cur = conn.execute(
+            "INSERT INTO orders (order_id, user_id, item_name, status) VALUES (?, ?, ?, ?)",
+            (order_id, user_id, item_name, status),
+        )
+        conn.commit()
+        conn.close()
+        return self.get_order(cur.lastrowid)
+
+    def update_order_status(self, rowid, status):
+        status = (status or "").strip()[:200]
+        if not status:
+            raise ValueError("Введите статус")
+        conn = self.connect()
+        conn.execute("UPDATE orders SET status = ? WHERE id = ?", (status, rowid))
+        conn.commit()
+        conn.close()
+        return self.get_order(rowid)
+
+    def delete_order(self, rowid) -> bool:
+        conn = self.connect()
+        cur = conn.execute("DELETE FROM orders WHERE id = ?", (rowid,))
+        conn.commit()
+        conn.close()
+        return cur.rowcount > 0
+
+    def delete_orders(self, q: str) -> int:
+        if not q:
+            return 0
+        conn = self.connect()
+        cur = conn.execute("DELETE FROM orders WHERE order_id = ? OR user_id = ?", (q, q))
+        conn.commit()
+        conn.close()
+        return cur.rowcount
