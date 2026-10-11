@@ -15,7 +15,7 @@ from urllib.parse import quote
 from aiohttp import web
 
 from shop_logic import (
-    LOCAL_NAME_RE, MAX_MEDIA, normalize_media, validate_init_data,
+    LOCAL_NAME_RE, MAX_MEDIA, STAGES, normalize_media, validate_init_data,
 )
 
 log = logging.getLogger("webapp")
@@ -217,7 +217,7 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
         fields, saved = await read_form(request)
         try:
             row = shop.create_product(fields.get("name"), fields.get("description"),
-                                      fields.get("price"), fields.get("sizes"), saved)
+                                      fields.get("price"), fields.get("sizes"), saved, fields.get("category"))
         except Exception:
             remove_local(saved)
             raise
@@ -243,7 +243,7 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
             if len(media_items) > MAX_MEDIA:
                 raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
             row = shop.update_product(pid, fields.get("name"), fields.get("description"),
-                                      fields.get("price"), fields.get("sizes"), media_items)
+                                      fields.get("price"), fields.get("sizes"), media_items, fields.get("category"))
         except Exception:
             remove_local(saved)
             raise
@@ -277,11 +277,11 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
 
     async def order_add(request):
         d = await request.json()
-        row = shop.add_order(d.get("order_id"), d.get("user_id"), d.get("item_name"), d.get("status"))
+        row = shop.add_order(d.get("order_id"), d.get("user_id"), d.get("item_name"), d.get("status"), d.get("stage"))
         notified = await notify_client(
             row["user_id"],
             f"🔔 Новости по вашему заказу!\n🛸 Код: {row['order_id']}\n📦 Товар: {row['item_name']}\n"
-            f"📍 Новое местоположение: {row['status']}\n\nПосылка уже в пути! 🚀💨",
+            f"🚚 Этап: {STAGES[row['stage']]}\n📍 Новое местоположение: {row['status']}\n\nПосылка уже в пути! 🚀💨",
         )
         return web.json_response({"order": row, "notified": notified})
 
@@ -290,11 +290,11 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
         d = await request.json()
         if not shop.get_order(rowid):
             raise web.HTTPNotFound()
-        row = shop.update_order_status(rowid, d.get("status"))
+        row = shop.update_order_status(rowid, d.get("status"), d.get("stage"))
         notified = await notify_client(
             row["user_id"],
             f"🔔 Статус вашего заказа обновился!\n🛸 Код: {row['order_id']}\n📦 Товар: {row['item_name']}\n"
-            f"📍 Новое местоположение: {row['status']}",
+            f"🚚 Этап: {STAGES[row['stage']]}\n📍 Новое местоположение: {row['status']}",
         )
         return web.json_response({"order": row, "notified": notified})
 

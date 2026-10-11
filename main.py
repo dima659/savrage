@@ -993,9 +993,11 @@ async def start_webapp():
     if not os.path.isfile(os.path.join(static_dir, "index.html")):
         print("⚠️ Приложение не запущено: не найден файл index.html рядом с main.py.")
         return None
+    shop_obj = Shop(get_db_path(), CURRENCY_SIGN)
+    shop_obj.init_schema()  # добавляет поля «категория» и «этап», если их ещё нет
     app = create_app(
         bot=bot, token=BOT_TOKEN, admin_ids=ADMIN_IDS,
-        shop=Shop(get_db_path(), CURRENCY_SIGN),
+        shop=shop_obj,
         manager_username=MANAGER_USERNAME, store_name=SHOP_NAME, tagline=SHOP_TAGLINE, currency=CURRENCY_SIGN,
         notify_admins=notify_admins, static_dir=static_dir,
         upload_dir=upload_dir(), cache_dir=os.path.join(data_dir(), "cache"),

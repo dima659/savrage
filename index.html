@@ -346,6 +346,26 @@ h1,h2,h3,p{margin:0}
 .mtile.add{box-shadow:none;border:2px dashed var(--line);color:var(--muted)}
 .mtile .cov{background:rgba(12,9,8,.7)}
 .progress i{background:var(--cta)}
+
+/* фильтры каталога */
+.filters{padding:0 0 6px}
+.fr{display:flex;align-items:center;gap:8px;overflow-x:auto;padding:0 18px 8px;scrollbar-width:none}
+.fr::-webkit-scrollbar{display:none}
+.fl{flex:none;font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.fc{flex:none;height:32px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--ink);font-size:12.5px;font-weight:800}
+.fc.on{background:#8EC1E8;color:#0C0908;border-color:#8EC1E8}
+/* шкала этапов посылки */
+.stg{display:flex;margin:12px 0 4px}
+.sg{flex:1;position:relative;text-align:center;font-size:11px;font-weight:700;color:var(--muted)}
+.sg i{display:block;width:14px;height:14px;border-radius:50%;margin:0 auto 6px;border:2px solid var(--line);background:var(--bg);position:relative;z-index:1}
+.sg::before{content:"";position:absolute;top:6px;left:-50%;right:50%;height:2px;background:var(--line)}
+.sg:first-child::before{display:none}
+.sg.done::before,.sg.cur::before{background:var(--cta)}
+.sg.done i,.sg.cur i{background:var(--cta);border-color:var(--cta)}
+.sg.cur i{box-shadow:0 0 0 3px rgba(255,138,31,.28)}
+.sg.done,.sg.cur{color:var(--ink)}
+.sg.cur{font-weight:800}
+.wb-row .stamp{margin-top:8px}
 </style>
 </head>
 <body>
@@ -391,7 +411,7 @@ const I = {
 const ico = (n, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
 
 /* ---------- состояние ---------- */
-const S = { me: null, products: [], loaded: false, search: '', tab: 'catalog', atab: 'products', trackQ: '', orderQ: '', fresh: true };
+const S = { me: null, products: [], loaded: false, search: '', tab: 'catalog', atab: 'products', trackQ: '', orderQ: '', fresh: true, cat: '', size: '', sort: 'new' };
 const view = $('#view');
 
 /* ---------- утилиты ---------- */
@@ -522,22 +542,45 @@ async function renderCatalog() {
     <header class="hero"><h1>Logistic<br>Center</h1><p>${esc(S.me.store)} · ${esc(S.me.tagline || 'Одежда и обувь из Китая')}</p></header>
     <div class="stripe"></div>
     <div class="searchbar"><label class="search">${ico('search')}<input id="q" type="search" placeholder="Поиск по каталогу" value="${esc(S.search)}" autocomplete="off"></label></div>
+    <div id="filters" class="filters"></div>
     <section id="grid" class="grid">${skeletons(6)}</section>`;
   $('#q').addEventListener('input', e => { S.search = e.target.value; drawGrid(); });
+  $('#filters').addEventListener('click', e => {
+    const b = e.target.closest('[data-k]'); if (!b) return;
+    const k = b.dataset.k, v = b.dataset.v;
+    S[k] = (k === 'size' && S.size === v) ? '' : v;
+    haptic('light'); drawFilters(); drawGrid();
+  });
   $('#grid').addEventListener('click', e => {
     const c = e.target.closest('.card[data-id]'); if (!c) return;
     const p = S.products.find(x => x.id === +c.dataset.id); if (p) { haptic('light'); openProduct(p); }
   });
-  try { await loadProducts(); drawGrid(); }
+  try { await loadProducts(); drawFilters(); drawGrid(); }
   catch (e) { if (e.message !== 'unauthorized') $('#grid').innerHTML = emptyState('alert', 'Не удалось загрузить каталог', e.message); }
+}
+function drawFilters() {
+  const box = $('#filters'); if (!box) return;
+  const cats = CATS.filter(c => S.products.some(p => p.category === c));
+  const sizes = Array.from(new Set(S.products.flatMap(p => p.sizes)));
+  if (S.cat && !cats.includes(S.cat)) S.cat = '';
+  if (S.size && !sizes.includes(S.size)) S.size = '';
+  const chip = (k, v, label, on) => `<button type="button" class="fc ${on ? 'on' : ''}" data-k="${k}" data-v="${esc(v)}">${esc(label)}</button>`;
+  const rows = [];
+  if (cats.length) rows.push(`<div class="fr">${chip('cat', '', 'Всё', !S.cat)}${cats.map(c => chip('cat', c, c, S.cat === c)).join('')}</div>`);
+  if (sizes.length) rows.push(`<div class="fr"><span class="fl">Размер</span>${sizes.map(s => chip('size', s, s, S.size === s)).join('')}</div>`);
+  if (S.products.length > 1) rows.push(`<div class="fr"><span class="fl">Цена</span>${chip('sort', 'new', 'Сначала новые', S.sort === 'new')}${chip('sort', 'asc', 'Дешевле', S.sort === 'asc')}${chip('sort', 'desc', 'Дороже', S.sort === 'desc')}</div>`);
+  box.innerHTML = rows.join('');
 }
 function drawGrid() {
   const g = $('#grid'); if (!g) return;
   const q = S.search.trim().toLowerCase();
-  const list = q ? S.products.filter(p => (p.name + ' ' + p.description).toLowerCase().includes(q)) : S.products;
-  g.classList.toggle('fresh', S.fresh && !q);
+  let list = S.products.filter(p => (!q || (p.name + ' ' + p.description).toLowerCase().includes(q)) && (!S.cat || p.category === S.cat) && (!S.size || p.sizes.includes(S.size)));
+  if (S.sort === 'asc') list = list.slice().sort((a, b) => a.price - b.price);
+  else if (S.sort === 'desc') list = list.slice().sort((a, b) => b.price - a.price);
+  const filtered = !!(q || S.cat || S.size);
+  g.classList.toggle('fresh', S.fresh && !filtered);
   g.innerHTML = list.length ? list.map(productCard).join('')
-    : (S.products.length ? emptyState('search', 'Ничего не найдено', 'Попробуйте изменить запрос') : emptyState('tag', 'Каталог пока пуст', 'Новые вещи скоро появятся'));
+    : (S.products.length ? emptyState('search', 'Ничего не найдено', 'Попробуйте изменить запрос или фильтры') : emptyState('tag', 'Каталог пока пуст', 'Новые вещи скоро появятся'));
   if (list.length) S.fresh = false;
 }
 
@@ -596,7 +639,11 @@ function openProduct(p) {
 }
 
 /* ================================================================= ПОСЫЛКИ */
+const CATS = ['Обувь', 'Одежда', 'Аксессуары'];
+const STAGES = ['Китай', 'Склад', 'В пути', 'У вас'];
 const stamp = text => `<span class="stamp">${ico('truck')}${esc(text)}</span>`;
+const stageBar = n => `<div class="stg" role="img" aria-label="Этап: ${esc(STAGES[n])}">${STAGES.map((s, i) => `<div class="sg ${i < n ? 'done' : i === n ? 'cur' : ''}"><i></i><span>${s}</span></div>`).join('')}</div>`;
+const extra = o => (o.status && o.status !== STAGES[o.stage]) ? stamp(o.status) : '';
 async function renderStatus() {
   view.innerHTML = `
     <header class="hero small"><h1>Мои посылки</h1><p>Путь заказа из Китая до вас</p></header>
@@ -623,7 +670,7 @@ async function loadTracking() {
         <div class="stripe thin"></div>
         <div class="wb-head"><span class="code">${esc(code)}</span><button class="mini" data-copy="${esc(code)}" aria-label="Скопировать код">${ico('copy', 'sm')} Копировать</button></div>
         <div class="wb-sep"></div>
-        ${items.map(it => `<div class="wb-row"><div style="min-width:0"><div class="tname">${esc(it.item_name)}</div>${stamp(it.status)}</div></div>`).join('')}
+        ${items.map(it => `<div class="wb-row"><div style="min-width:0;flex:1"><div class="tname">${esc(it.item_name)}</div>${stageBar(it.stage)}${extra(it)}</div></div>`).join('')}
       </article>`).join('');
     $$('[data-copy]', box).forEach(b => b.addEventListener('click', () => copyText(b.dataset.copy)));
   } catch (e) { if (e.message !== 'unauthorized') box.innerHTML = emptyState('alert', 'Не удалось загрузить', e.message); }
@@ -707,6 +754,7 @@ function openProductEditor(p) {
       <input type="file" id="mfile" accept="image/*,video/*" multiple hidden>
       <h3 class="h3">Информация</h3>
       <label class="field"><span>Название</span><input name="name" maxlength="100" placeholder="Например, Пуховик зимний" value="${esc(p ? p.name : '')}" required></label>
+      <div class="field"><span>Категория</span><div class="chips" id="catchips" style="margin-top:0">${CATS.map(c => `<button type="button" class="chip ${p && p.category === c ? 'sel' : ''}" data-c="${c}">${c}</button>`).join('')}</div></div>
       <div class="row2">
         <label class="field"><span>Цена, ${esc(sign)}</span><input name="price" inputmode="decimal" placeholder="4500" value="${p ? esc(String(p.price)) : ''}" required></label>
         <label class="field"><span>Размеры</span><input name="sizes" id="sizes" placeholder="S, M, L" value="${esc(p ? p.sizes.join(', ') : '')}"></label>
@@ -720,6 +768,11 @@ function openProductEditor(p) {
       <button class="btn primary big" id="save" type="button">${p ? 'Сохранить' : 'Добавить товар'}</button>
     </div>`, { cls: 'tall' });
   const el = ctl.el, grid = $('#mgrid', el), fileIn = $('#mfile', el);
+  let cat = p ? (p.category || '') : '';
+  $$('#catchips .chip', el).forEach(c => c.addEventListener('click', () => {
+    cat = cat === c.dataset.c ? '' : c.dataset.c; haptic('light');
+    $$('#catchips .chip', el).forEach(x => x.classList.toggle('sel', x.dataset.c === cat));
+  }));
 
   function drawMedia() {
     grid.innerHTML = items.map((m, i) => `<div class="mtile">${m.type === 'video' ? `<video src="${esc(m.url)}#t=0.1" muted preload="metadata"></video><span class="badge tl" style="top:6px;left:6px">${ico('play')}</span>` : `<img src="${esc(m.url)}" alt="">`}${i === 0 ? '<span class="cov">обложка</span>' : ''}<button type="button" class="rm" data-i="${i}" aria-label="Убрать">${ico('close')}</button></div>`).join('')
@@ -753,7 +806,7 @@ function openProductEditor(p) {
     const prog = $('#prog', el); prog.hidden = false;
     try {
       const fd = new FormData();
-      fd.append('name', name); fd.append('price', price); fd.append('sizes', f.sizes.value); fd.append('description', f.description.value);
+      fd.append('name', name); fd.append('price', price); fd.append('sizes', f.sizes.value); fd.append('description', f.description.value); fd.append('category', cat);
       if (p) fd.append('keep', JSON.stringify(items.filter(i => i.old).map(i => i.key)));
       const fresh = items.filter(i => !i.old);
       for (let n = 0; n < fresh.length; n++) {
@@ -803,7 +856,7 @@ function drawOrders() {
         <div class="stripe thin"></div>
         <div class="wb-head"><span class="code">${esc(code)}</span><span class="tmeta" style="margin:0">ID клиента: ${esc(rows[0].user_id)}</span></div>
         <div class="wb-sep"></div>
-        ${rows.map(o => `<button class="wb-row" data-id="${o.id}"><div style="flex:1;min-width:0"><div class="tname">${esc(o.item_name)}</div>${stamp(o.status)}</div><span style="color:var(--muted);align-self:center">${ico('edit', 'sm')}</span></button>`).join('')}
+        ${rows.map(o => `<button class="wb-row" data-id="${o.id}"><div style="flex:1;min-width:0"><div class="tname">${esc(o.item_name)}</div>${stamp(o.stage_name + (extra(o) ? ' · ' + o.status : ''))}</div><span style="color:var(--muted);align-self:center">${ico('edit', 'sm')}</span></button>`).join('')}
       </article>`).join('') : emptyState('box', S.orders.length ? 'Ничего не найдено' : 'Посылок пока нет', S.orders.length ? 'Измените запрос' : 'Нажмите «+», чтобы добавить заказ для отслеживания')}</div>
     ${exact ? `<div style="padding:14px 16px 0"><button class="btn danger" id="delq" style="width:100%">${ico('trash', 'sm')} Удалить всё по «${esc(S.orderQ.trim())}»</button></div>` : ''}
     <button class="fab" id="fab" aria-label="Добавить заказ">${ico('plus')}</button>`;
@@ -836,20 +889,23 @@ async function openOrderCreate() {
       <label class="field"><span>Товар из каталога</span>
         <select name="prod"><option value="">Выберите товар</option>${products.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')}<option value="__custom">Другой товар, ввести вручную</option></select></label>
       <label class="field" id="customw" hidden><span>Название товара</span><input name="custom" maxlength="120" placeholder="Например, Крутая куртка"></label>
-      <label class="field"><span>Статус</span><input name="status" maxlength="200" placeholder="Где сейчас посылка" autocomplete="off"></label>
+      <div class="field"><span>Этап</span><div class="chips" id="stgchips" style="margin-top:0">${STAGES.map((s, i) => `<button type="button" class="chip ${i === 0 ? 'sel' : ''}" data-st="${i}">${s}</button>`).join('')}</div></div>
+      <label class="field"><span>Уточнение (необязательно)</span><input name="status" maxlength="200" placeholder="Например, склад в Гуанчжоу" autocomplete="off"></label>
       ${statusChips()}
     </form>
     <div class="sheet-foot"><button class="btn primary big" id="osave" type="button">Добавить посылку</button><p class="cta-note">Клиент получит уведомление в Telegram, если указан его ID</p></div>`, { cls: 'tall' });
   const el = ctl.el, f = $('#of', el);
   $$('#people .chip', el).forEach(c => c.addEventListener('click', () => { f.uid.value = c.dataset.id; haptic('light'); $$('#people .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
   f.prod.addEventListener('change', () => { $('#customw', el).hidden = f.prod.value !== '__custom'; });
+  let stage = 0;
+  $$('#stgchips .chip', el).forEach(c => c.addEventListener('click', () => { stage = +c.dataset.st; haptic('light'); $$('#stgchips .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
   $$('#stchips .chip', el).forEach(c => c.addEventListener('click', () => { f.status.value = c.dataset.s; haptic('light'); }));
   $('#osave', el).addEventListener('click', async e => {
     const btn = e.currentTarget;
     const item = f.prod.value === '__custom' ? f.custom.value.trim() : f.prod.value;
     btn.disabled = true;
     try {
-      const r = await api('/api/admin/orders', { method: 'POST', body: { order_id: f.code.value, user_id: f.uid.value || '0', item_name: item, status: f.status.value } });
+      const r = await api('/api/admin/orders', { method: 'POST', body: { order_id: f.code.value, user_id: f.uid.value || '0', item_name: item, status: f.status.value, stage } });
       haptic('ok'); toast(r.notified ? 'Добавлено, клиент уведомлён' : 'Посылка добавлена'); ctl.close(); adminOrders();
     } catch (err) { haptic('err'); toast(err.message); btn.disabled = false; }
   });
@@ -861,15 +917,18 @@ function openOrderEdit(o) {
     <div class="sheet-head"><h2>Посылка ${esc(o.order_id)}</h2><button class="xbtn" data-close aria-label="Закрыть">${ico('close', 'sm')}</button></div>
     <form class="sheet-body" id="of" novalidate>
       <div class="kv" style="margin:0 0 16px"><div><span>Товар</span><b style="text-align:right">${esc(o.item_name)}</b></div><div><span>ID клиента</span><b>${esc(o.user_id)}</b></div></div>
-      <label class="field"><span>Новый статус</span><input name="status" maxlength="200" value="${esc(o.status)}" autocomplete="off"></label>
+      <div class="field"><span>Этап</span><div class="chips" id="stgchips" style="margin-top:0">${STAGES.map((s, i) => `<button type="button" class="chip ${i === o.stage ? 'sel' : ''}" data-st="${i}">${s}</button>`).join('')}</div></div>
+      <label class="field"><span>Уточнение (необязательно)</span><input name="status" maxlength="200" value="${esc(extra(o) ? o.status : '')}" placeholder="Например, склад в Гуанчжоу" autocomplete="off"></label>
       ${statusChips()}
     </form>
-    <div class="sheet-foot"><div class="stack-h" style="margin-bottom:10px"><button class="btn danger" id="odel" type="button">${ico('trash', 'sm')} Удалить</button></div><button class="btn primary big" id="osave" type="button">Сохранить статус</button><p class="cta-note">Клиент получит уведомление, если указан его ID</p></div>`, { cls: 'tall' });
+    <div class="sheet-foot"><div class="stack-h" style="margin-bottom:10px"><button class="btn danger" id="odel" type="button">${ico('trash', 'sm')} Удалить</button></div><button class="btn primary big" id="osave" type="button">Сохранить</button><p class="cta-note">Клиент получит уведомление, если указан его ID</p></div>`, { cls: 'tall' });
   const el = ctl.el, f = $('#of', el);
+  let stage = o.stage;
+  $$('#stgchips .chip', el).forEach(c => c.addEventListener('click', () => { stage = +c.dataset.st; haptic('light'); $$('#stgchips .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
   $$('#stchips .chip', el).forEach(c => c.addEventListener('click', () => { f.status.value = c.dataset.s; haptic('light'); }));
   $('#osave', el).addEventListener('click', async e => {
     const btn = e.currentTarget; btn.disabled = true;
-    try { const r = await api('/api/admin/order/' + o.id, { method: 'POST', body: { status: f.status.value } }); haptic('ok'); toast(r.notified ? 'Сохранено, клиент уведомлён' : 'Сохранено'); ctl.close(); adminOrders(); }
+    try { const r = await api('/api/admin/order/' + o.id, { method: 'POST', body: { status: f.status.value, stage } }); haptic('ok'); toast(r.notified ? 'Сохранено, клиент уведомлён' : 'Сохранено'); ctl.close(); adminOrders(); }
     catch (err) { haptic('err'); toast(err.message); btn.disabled = false; }
   });
   $('#odel', el).addEventListener('click', async () => {

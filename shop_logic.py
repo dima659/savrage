@@ -16,6 +16,22 @@ MSK = timezone(timedelta(hours=3))
 MAX_MEDIA = 10
 LOCAL_NAME_RE = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]{2,5}$")
 MEDIA_PREFIXES = ("p:", "v:", "lp:", "lv:")
+CATEGORIES = ["Обувь", "Одежда", "Аксессуары"]
+STAGES = ["Китай", "Склад", "В пути", "У вас"]
+
+
+def parse_stage(value, default: int = 2) -> int:
+    """Номер этапа посылки (0..3). При ошибке возвращает default."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if 0 <= n < len(STAGES) else default
+
+
+def clean_category(value) -> str:
+    value = (value or "").strip()
+    return value if value in CATEGORIES else ""
 
 
 # ---------------------------------------------------------------- Telegram auth
@@ -120,6 +136,14 @@ class Shop:
             );
             """
         )
+        # Миграции для уже существующих баз: добавляем новые поля, если их ещё нет
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
+        if "category" not in cols:
+            conn.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+        if "stage" not in cols:
+            # старые посылки считаем «в пути»
+            conn.execute("ALTER TABLE orders ADD COLUMN stage INTEGER DEFAULT 2")
         conn.commit()
         conn.close()
 
@@ -133,6 +157,7 @@ class Shop:
         return {
             "id": row["id"],
             "name": row["name"],
+            "category": row["category"] or "",
             "description": row["description"] or "",
             "price": row["price"],
             "price_text": self.money(row["price"]),
@@ -165,28 +190,28 @@ class Shop:
         sizes = ", ".join(split_sizes(sizes or ""))
         return name, description, price, sizes
 
-    def create_product(self, name, description, price, sizes, media_items):
+    def create_product(self, name, description, price, sizes, media_items, category=""):
         name, description, price, sizes = self.clean_fields(name, description, price, sizes)
         if len(media_items) > MAX_MEDIA:
             raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
         conn = self.connect()
         cur = conn.execute(
-            "INSERT INTO products (name, description, price, sizes, photo_id, active) VALUES (?, ?, ?, ?, ?, 1)",
-            (name, description, price, sizes, ",".join(media_items)),
+            "INSERT INTO products (name, description, price, sizes, photo_id, active, category) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (name, description, price, sizes, ",".join(media_items), clean_category(category)),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM products WHERE id = ?", (cur.lastrowid,)).fetchone()
         conn.close()
         return row
 
-    def update_product(self, pid, name, description, price, sizes, media_items):
+    def update_product(self, pid, name, description, price, sizes, media_items, category=""):
         name, description, price, sizes = self.clean_fields(name, description, price, sizes)
         if len(media_items) > MAX_MEDIA:
             raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
         conn = self.connect()
         conn.execute(
-            "UPDATE products SET name=?, description=?, price=?, sizes=?, photo_id=? WHERE id=?",
-            (name, description, price, sizes, ",".join(media_items), pid),
+            "UPDATE products SET name=?, description=?, price=?, sizes=?, photo_id=?, category=? WHERE id=?",
+            (name, description, price, sizes, ",".join(media_items), clean_category(category), pid),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
@@ -241,7 +266,8 @@ class Shop:
     @staticmethod
     def _order_dict(r):
         return {"id": r["id"], "order_id": r["order_id"], "user_id": r["user_id"],
-                "item_name": r["item_name"], "status": r["status"]}
+                "item_name": r["item_name"], "status": r["status"],
+                "stage": parse_stage(r["stage"]), "stage_name": STAGES[parse_stage(r["stage"])]}
 
     def search_tracking(self, q: str, by_user: bool = True):
         """Поиск посылок по коду заказа и (если by_user) по ID клиента."""
@@ -269,34 +295,36 @@ class Shop:
         conn.close()
         return self._order_dict(r) if r else None
 
-    def add_order(self, order_id, user_id, item_name, status):
+    def add_order(self, order_id, user_id, item_name, status, stage=0):
         order_id = (order_id or "").strip()[:40]
         user_id = (str(user_id) if user_id is not None else "").strip() or "0"
         item_name = (item_name or "").strip()[:120]
-        status = (status or "").strip()[:200]
+        stage = parse_stage(stage, 0)
+        # Уточнение необязательно: если пусто, показываем название этапа
+        status = (status or "").strip()[:200] or STAGES[stage]
         if not order_id:
             raise ValueError("Введите код заказа")
         if not user_id.isdigit():
             raise ValueError("ID клиента — это число (или 0, если ID нет)")
         if not item_name:
             raise ValueError("Выберите товар или введите название")
-        if not status:
-            raise ValueError("Введите статус")
         conn = self.connect()
         cur = conn.execute(
-            "INSERT INTO orders (order_id, user_id, item_name, status) VALUES (?, ?, ?, ?)",
-            (order_id, user_id, item_name, status),
+            "INSERT INTO orders (order_id, user_id, item_name, status, stage) VALUES (?, ?, ?, ?, ?)",
+            (order_id, user_id, item_name, status, stage),
         )
         conn.commit()
         conn.close()
         return self.get_order(cur.lastrowid)
 
-    def update_order_status(self, rowid, status):
-        status = (status or "").strip()[:200]
-        if not status:
-            raise ValueError("Введите статус")
+    def update_order_status(self, rowid, status, stage=None):
+        cur_row = self.get_order(rowid)
+        if not cur_row:
+            return None
+        new_stage = cur_row["stage"] if stage is None or stage == "" else parse_stage(stage, cur_row["stage"])
+        status = (status or "").strip()[:200] or STAGES[new_stage]
         conn = self.connect()
-        conn.execute("UPDATE orders SET status = ? WHERE id = ?", (status, rowid))
+        conn.execute("UPDATE orders SET status = ?, stage = ? WHERE id = ?", (status, new_stage, rowid))
         conn.commit()
         conn.close()
         return self.get_order(rowid)
