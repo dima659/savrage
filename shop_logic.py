@@ -146,6 +146,23 @@ class Shop:
             "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', "
             "full_name TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, blocked INTEGER DEFAULT 0)"
         )
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER, product_name TEXT, kind TEXT DEFAULT 'drop', created TEXT,
+                total INTEGER DEFAULT 0, sent INTEGER DEFAULT 0, blocked INTEGER DEFAULT 0,
+                failed INTEGER DEFAULT 0, done INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS broadcast_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                broadcast_id INTEGER, user_id INTEGER, status TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_bclog ON broadcast_log (broadcast_id);
+            """
+        )
+        # после перезапуска ни одна рассылка не продолжается: помечаем незавершённые как завершённые
+        conn.execute("UPDATE broadcasts SET done = 1 WHERE done = 0")
         # Миграции для уже существующих баз: добавляем новые поля, если их ещё нет
         cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
         if "category" not in cols:
@@ -316,6 +333,58 @@ class Shop:
         )
         conn.commit()
         conn.close()
+
+    # --------------------------------------------------------- рассылки
+    def create_broadcast(self, product_id, product_name, kind, total):
+        conn = self.connect()
+        cur = conn.execute(
+            "INSERT INTO broadcasts (product_id, product_name, kind, created, total) VALUES (?, ?, ?, ?, ?)",
+            (product_id, product_name, kind, now_msk(), total),
+        )
+        conn.commit()
+        conn.close()
+        return cur.lastrowid
+
+    def log_delivery(self, broadcast_id, user_id, status):
+        """status: sent | blocked | failed. Счётчики обновляются сразу, чтобы прогресс было видно."""
+        if status not in ("sent", "blocked", "failed"):
+            return
+        conn = self.connect()
+        conn.execute("INSERT INTO broadcast_log (broadcast_id, user_id, status) VALUES (?, ?, ?)",
+                     (broadcast_id, int(user_id), status))
+        conn.execute(f"UPDATE broadcasts SET {status} = {status} + 1 WHERE id = ?", (broadcast_id,))
+        conn.commit()
+        conn.close()
+
+    def finish_broadcast(self, broadcast_id):
+        conn = self.connect()
+        conn.execute("UPDATE broadcasts SET done = 1 WHERE id = ?", (broadcast_id,))
+        conn.commit()
+        conn.close()
+
+    def list_broadcasts(self, limit: int = 30):
+        conn = self.connect()
+        rows = conn.execute("SELECT * FROM broadcasts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_broadcast(self, broadcast_id):
+        conn = self.connect()
+        row = conn.execute("SELECT * FROM broadcasts WHERE id = ?", (broadcast_id,)).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def broadcast_recipients(self, broadcast_id):
+        """Кому ушла рассылка: имя берём из таблицы users."""
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT l.user_id, l.status, COALESCE(u.username, '') AS username, COALESCE(u.full_name, '') AS full_name "
+            "FROM broadcast_log l LEFT JOIN users u ON u.user_id = l.user_id "
+            "WHERE l.broadcast_id = ? ORDER BY CASE l.status WHEN 'sent' THEN 0 WHEN 'blocked' THEN 1 ELSE 2 END, l.id",
+            (broadcast_id,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
 
     def list_audience(self):
         conn = self.connect()

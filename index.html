@@ -376,6 +376,7 @@ h1,h2,h3,p{margin:0}
 .pill-soon{box-shadow:inset 0 0 0 1.5px var(--blue);color:var(--blue)}
 .pill-sold{box-shadow:inset 0 0 0 1.5px var(--muted);color:var(--muted)}
 .item .t .pill{margin-left:0}
+.lead .pill{flex:none}
 </style>
 </head>
 <body>
@@ -713,12 +714,12 @@ function renderProfile() {
 /* ================================================================== УПРАВЛЕНИЕ */
 function renderAdmin() {
   view.innerHTML = `
-    <header class="hero small"><h1>Управление</h1><p>Товары, посылки и интерес клиентов</p></header>
+    <header class="hero small"><h1>Управление</h1><p>Товары, посылки, интерес и рассылки</p></header>
     <div class="stripe thin"></div>
-    <div class="atabs">${[['products', 'Товары'], ['orders', 'Посылки'], ['leads', 'Интерес']].map(([k, l]) => `<button data-a="${k}" class="${S.atab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="atabs">${[['products', 'Товары'], ['orders', 'Посылки'], ['leads', 'Интерес'], ['broadcasts', 'Рассылки']].map(([k, l]) => `<button data-a="${k}" class="${S.atab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div id="apane" style="padding-top:12px"></div>`;
   $$('.atabs button').forEach(b => b.addEventListener('click', () => { S.atab = b.dataset.a; haptic('light'); renderAdmin(); }));
-  ({ products: adminProducts, orders: adminOrders, leads: adminLeads })[S.atab]();
+  ({ products: adminProducts, orders: adminOrders, leads: adminLeads, broadcasts: adminBroadcasts })[S.atab]();
 }
 const pane = () => $('#apane');
 const loading = () => { const p = pane(); if (p) p.innerHTML = `<div class="list">${Array.from({ length: 4 }, () => '<div class="item skel"><div class="thumb"></div><div class="grow"><div class="l" style="width:60%"></div><div class="l" style="width:35%"></div></div></div>').join('')}</div>`; };
@@ -795,6 +796,7 @@ function openProductEditor(p) {
     try {
       const r = await api('/api/admin/product/' + p.id + '/broadcast', { method: 'POST', body: { mode } });
       haptic('ok'); toast(mode === 'test' ? 'Тест отправлен вам в бот' : 'Рассылка запущена: получателей ' + r.total);
+      if (mode === 'all') { ctl.close(); S.atab = 'broadcasts'; renderAdmin(); }
     } catch (e) { haptic('err'); toast(e.message); }
   };
   const bt = $('#bctest', el), ba = $('#bcall', el);
@@ -967,6 +969,38 @@ function openOrderEdit(o) {
     try { await api('/api/admin/order/' + o.id, { method: 'DELETE' }); haptic('ok'); toast('Удалено'); ctl.close(); adminOrders(); }
     catch (err) { toast(err.message); }
   });
+}
+
+/* ---- рассылки: кому ушёл «Новый дроп» ---- */
+async function adminBroadcasts() {
+  loading();
+  try {
+    const d = await api('/api/admin/broadcasts');
+    pane().innerHTML = d.items.length ? `<div class="list">${d.items.map(b => `
+      <button class="item" data-id="${b.id}">
+        <span class="grow"><div class="t"><span class="n">${esc(b.product_name)}</span>${b.kind === 'waiting' ? '<span class="pill pill-soon">ждавшим</span>' : ''}${b.done ? '' : '<span class="pill pill-soon">идёт…</span>'}</div>
+          <div class="s">${esc(b.created)}, получателей ${b.total}</div>
+          <div class="s">Доставлено ${b.sent} · заблокировали ${b.blocked} · не дошло ${b.failed}</div></span>
+        <span class="go">${ico('chevron', 'sm')}</span>
+      </button>`).join('')}</div>` : emptyState('chat', 'Рассылок пока не было', 'Откройте товар и нажмите «Разослать всем»');
+    $$('.item[data-id]', pane()).forEach(b => b.addEventListener('click', () => openBroadcast(+b.dataset.id)));
+  } catch (e) { failed(e); }
+}
+async function openBroadcast(id) {
+  let d;
+  try { d = await api('/api/admin/broadcast/' + id); } catch (e) { toast(e.message); return; }
+  const b = d.broadcast;
+  const ST = { sent: ['Доставлено', 'pill pill-soon'], blocked: ['Заблокировал бота', 'pill'], failed: ['Не дошло', 'pill pill-sold'] };
+  openSheet(`
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Кому ушло</h2><button class="xbtn" data-close aria-label="Закрыть">${ico('close', 'sm')}</button></div>
+    <div class="sheet-body">
+      <div class="kv" style="margin:0 0 14px"><div><span>Товар</span><b style="text-align:right">${esc(b.product_name)}</b></div><div><span>Дата</span><b>${esc(b.created)}</b></div><div><span>Доставлено</span><b>${b.sent} из ${b.total}</b></div></div>
+      ${d.items.length ? d.items.map(r => `
+        <div class="lead"><div class="av">${esc(initial(r.full_name || r.username))}</div>
+          <div style="flex:1;min-width:0"><div style="font-weight:700">${esc(r.full_name || 'Без имени')}${r.username ? ` <span style="color:var(--muted);font-weight:500">@${esc(r.username)}</span>` : ''}</div><div class="tmeta">ID ${r.user_id}</div></div>
+          <span class="${ST[r.status][1]}" style="align-self:center;white-space:nowrap">${ST[r.status][0]}</span></div>`).join('') : emptyState('eye', 'Пока никого', 'Список заполняется по мере отправки')}
+    </div>`, { cls: 'tall' });
 }
 
 /* ---- интерес клиентов ---- */

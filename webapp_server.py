@@ -164,7 +164,15 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
                 log.warning("Медиа для рассылки не отправилось, шлём текст: %s", e)
         await bot.send_message(uid, caption, parse_mode="HTML", reply_markup=kb)
 
-    async def deliver(ids, p: dict, header: str):
+    def note(bid, uid, status):
+        """Запись в журнал «кому ушло». Для тестовой отправки журнал не ведём."""
+        if bid:
+            try:
+                shop.log_delivery(bid, uid, status)
+            except Exception:
+                log.exception("Не удалось записать в журнал рассылки")
+
+    async def deliver(ids, p: dict, header: str, bid=None):
         """Отправляет всем из списка. Возвращает (доставлено, заблокировали бота, ошибок)."""
         sent = blocked = failed = 0
         for uid in ids:
@@ -172,33 +180,42 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
                 try:
                     await send_drop(uid, p, header)
                     sent += 1
+                    note(bid, uid, "sent")
                     break
                 except TelegramRetryAfter as e:
                     await asyncio.sleep(e.retry_after + 1)
                 except TelegramForbiddenError:
                     blocked += 1
                     shop.mark_blocked(uid)
+                    note(bid, uid, "blocked")
                     break
                 except Exception as e:
                     log.warning("Рассылка: не доставлено %s: %s", uid, e)
                     failed += 1
+                    note(bid, uid, "failed")
                     break
             else:
                 failed += 1
+                note(bid, uid, "failed")
             await asyncio.sleep(0.05)  # ~20 сообщений в секунду, в пределах лимитов Telegram
         return sent, blocked, failed
 
     async def run_broadcast(ids, p: dict, admin_id: int, test: bool):
         header = "⏳ Скоро в магазине" if p["state"] == "soon" else "🔥 Новый дроп"
+        bid = None
         if not test:
             bc_state["running"] = True
+            bid = shop.create_broadcast(p["id"], p["name"], "drop", len(ids))
         try:
-            sent, blocked, failed = await deliver(ids, p, header)
+            sent, blocked, failed = await deliver(ids, p, header, bid)
         except Exception:
             log.exception("Ошибка рассылки")
             sent = blocked = failed = 0
         finally:
-            bc_state["running"] = False if not test else bc_state["running"]
+            if not test:
+                bc_state["running"] = False
+            if bid:
+                shop.finish_broadcast(bid)
         try:
             if test:
                 text = "🧪 Тест отправлен. Так увидят рассылку получатели." if sent else "⚠️ Тест не отправился. Откройте чат с ботом и нажмите /start."
@@ -216,7 +233,11 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
             return
         ids = shop.waiting_users(pid)
         if ids:
-            await deliver(ids, shop.product_dict(row), "🔔 Товар, которого вы ждали, уже в магазине")
+            bid = shop.create_broadcast(pid, row["name"], "waiting", len(ids))
+            try:
+                await deliver(ids, shop.product_dict(row), "🔔 Товар, которого вы ждали, уже в магазине", bid)
+            finally:
+                shop.finish_broadcast(bid)
         shop.clear_waiting(pid)
 
     def product_id(request) -> int:
@@ -404,6 +425,15 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
         asyncio.create_task(run_broadcast(ids, p, me_id, test))
         return web.json_response({"started": True, "total": len(ids)})
 
+    async def broadcasts_list(request):
+        return web.json_response({"items": shop.list_broadcasts()})
+
+    async def broadcast_detail(request):
+        b = shop.get_broadcast(product_id(request))
+        if not b:
+            raise web.HTTPNotFound()
+        return web.json_response({"broadcast": b, "items": shop.broadcast_recipients(b["id"])})
+
     async def orders_list(request):
         return web.json_response({"items": shop.list_orders()})
 
@@ -466,6 +496,8 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
     r.add_post("/api/admin/product/{id}/toggle", product_toggle)
     r.add_delete("/api/admin/product/{id}", product_delete)
     r.add_post("/api/admin/product/{id}/broadcast", product_broadcast)
+    r.add_get("/api/admin/broadcasts", broadcasts_list)
+    r.add_get("/api/admin/broadcast/{id}", broadcast_detail)
     r.add_get("/api/admin/orders", orders_list)
     r.add_post("/api/admin/orders", order_add)
     r.add_delete("/api/admin/orders", orders_delete_q)
