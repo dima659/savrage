@@ -6,6 +6,8 @@
 <meta name="color-scheme" content="light dark">
 <title>LC Store</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@700;800&family=Manrope:wght@500;600;700;800&display=swap">
+
 <style>
 /* =====================================================================
    Палитра из аватарки: ночной тёмно-синий, оранжевый и голубой.
@@ -237,6 +239,70 @@ h1,h2,h3,p{margin:0}
 #toast{position:fixed;left:50%;bottom:calc(var(--tab-h) + var(--safe-b) + 78px);z-index:100;transform:translate(-50%,16px);max-width:calc(100% - 32px);padding:11px 18px;border-radius:12px;background:var(--cta);color:var(--on-cta);font-weight:600;font-size:14px;opacity:0;pointer-events:none;transition:all .25s ease;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* =====================================================================
+   НОВЫЙ ДИЗАЙН: тёмный, без свечения. Оранжевый и голубой из аватарки.
+   ===================================================================== */
+:root,:root[data-scheme="dark"]{
+  color-scheme:dark;
+  --bg:#0A0E1A;--surface:#141B2E;--ink:#FFFFFF;--muted:#9AA6C4;--line:#26304D;
+  --cta:#FF5A1F;--on-cta:#0A0E1A;--sel:#0F2C3F;--red:#FF6B6B;--blue:#22D3EE;
+  --accent:#FF5A1F;--cy:#22D3EE;--tag:#0A0E1A;--tag-ink:#FFFFFF;--glow:none;
+  --r-photo:20px;--r-ctl:16px;--tab-h:78px;
+  --font:Manrope,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+  --disp:Unbounded,"Arial Black",sans-serif;
+}
+/* светлая тема: те же формы и цвета акцентов, светлые поверхности */
+:root[data-scheme="light"]{
+  color-scheme:light;
+  --bg:#F2F5FA;--surface:#FFFFFF;--ink:#0A0E1A;--muted:#5A6781;--line:#D9E0EC;
+  --on-cta:#0A0E1A;--sel:#DFF4FB;--red:#D62F25;--blue:#0C8FBF;--cy:#22C8F2;
+  --tag:#0A0E1A;--tag-ink:#FFFFFF;
+}
+.hero h1,.hero.small h1,.brand h1{font-family:var(--disp);font-style:italic;font-weight:800;text-transform:uppercase;letter-spacing:0;font-size:23px;line-height:1.15}
+.brand h1{font-size:26px}
+.brand img{width:68px;height:68px;border-radius:22px;box-shadow:none;border:3px solid var(--accent)}
+.hero{padding:24px 20px 16px}
+.hero.small{padding:24px 20px 14px}
+.stripe{height:8px;background:repeating-linear-gradient(115deg,var(--accent) 0 16px,transparent 16px 24px,var(--cy) 24px 40px,transparent 40px 48px)}
+.searchbar{padding:12px 20px}
+.search{height:52px;border-radius:18px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--line)}
+.grid{padding:6px 20px 0;gap:12px}
+.pw{margin-bottom:22px}
+.btn{height:52px;border-radius:18px}
+.btn.primary{background:linear-gradient(135deg,#FF5A1F,#FF8A3D)}
+.btn.big{height:54px;border-radius:18px}
+.btn.danger{box-shadow:inset 0 0 0 2px var(--red)}
+.sizebtn{border-radius:14px}
+.sizebtn.on{background:linear-gradient(135deg,#FF5A1F,#FF8A3D)}
+.field input,.field textarea,.field select{border-radius:16px}
+#tabs{left:14px;right:14px;bottom:calc(14px + var(--safe-b));padding:6px;gap:4px;justify-content:stretch;border:1px solid var(--line);border-radius:26px;background:var(--surface)}
+.tab{border-radius:20px;padding:10px 0 8px;font-size:11px;font-weight:700;gap:4px}
+.tab.on{background:linear-gradient(135deg,#FF5A1F,#FF8A3D);color:var(--on-cta)}
+.tab.on::after{display:none}
+.atabs{gap:4px;margin:2px 20px 16px;padding:5px;border:1px solid var(--line);border-radius:20px;background:var(--surface)}
+.atabs button{flex:1;height:44px;border-radius:15px;font-size:14px}
+.atabs button.on{background:linear-gradient(135deg,#FF5A1F,#FF8A3D);color:var(--on-cta)}
+.atabs button.on::after{display:none}
+.list{padding:0 20px}
+.item{padding:10px 14px 10px 10px;margin-bottom:12px;border:1px solid var(--line);border-radius:22px;background:var(--surface)}
+.thumb{width:68px;height:68px;border-radius:16px}
+.pill{border-radius:8px;color:var(--red)}
+.fab{width:62px;height:62px;border-radius:22px;background:linear-gradient(135deg,#FF5A1F,#FF8A3D);box-shadow:none;right:20px}
+.stack{padding:6px 20px 0}
+.wb{border-radius:22px;box-shadow:0 0 0 1px var(--line)}
+.trackform{padding:2px 20px 4px}
+.pcard .avatar{width:112px;height:112px;font-family:var(--disp);font-style:italic;font-size:46px;background:linear-gradient(135deg,#FF5A1F,#FF8A3D);border:4px solid var(--cy)}
+.pcard h2{font-size:26px;font-weight:800}
+.pcard .un{color:var(--blue);font-weight:700}
+.kv{margin:0 20px;padding:0 18px;background:var(--surface);border:1px solid var(--line);border-radius:22px}
+.kv>div:last-child{border-bottom:0}
+.pbtns{margin:20px 20px 0}
+.sheet{border-radius:28px 28px 0 0;background:var(--bg)}
+.sheet-head h2{font-family:var(--disp);font-style:italic;text-transform:uppercase;font-size:18px}
+.sheet-foot{background:var(--bg)}
+.chip.sel{box-shadow:inset 0 0 0 2px var(--blue)}
+#toast{bottom:calc(var(--tab-h) + var(--safe-b) + 24px);background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
 </style>
 </head>
 <body>

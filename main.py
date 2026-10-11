@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo,
-    WebAppInfo, MenuButtonWebApp, FSInputFile,
+    WebAppInfo, MenuButtonWebApp, FSInputFile, ReplyKeyboardRemove,
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -206,29 +206,13 @@ def webapp_inline_kb(text="🛍 Открыть магазин"):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, web_app=WebAppInfo(url=WEBAPP_URL))]])
 
 
-def get_client_kb(user_id):
-    buttons = [
-        [KeyboardButton(text="🛍 Каталог"), KeyboardButton(text="🔍 Проверить статус")],
-        [KeyboardButton(text="🆔 Узнать мой ID")],
-    ]
-    if WEBAPP_URL:
-        buttons.insert(0, [KeyboardButton(text=BTN_APP)])
-    # Если пользователь есть в списке админов, показываем кнопку возврата
-    if user_id in ADMIN_IDS:
-        buttons.append([KeyboardButton(text="🪐 Админ-панель")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+def get_client_kb(user_id=None):
+    # Кнопки под полем ввода больше не нужны: всё в мини-приложении
+    return ReplyKeyboardRemove()
 
 
 def get_admin_kb():
-    rows = [
-        [KeyboardButton(text=BTN_ADD_PRODUCT), KeyboardButton(text=BTN_MANAGE)],
-        [KeyboardButton(text="✍️ Добавить заказ"), KeyboardButton(text="📋 Список всех заказов")],
-        [KeyboardButton(text=BTN_LEADS), KeyboardButton(text="❌ Удалить товары по коду")],
-        [KeyboardButton(text="📱 Клиентское меню")],
-    ]
-    if WEBAPP_URL:
-        rows.insert(0, [KeyboardButton(text=BTN_APP)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    return ReplyKeyboardRemove()
 
 
 def done_kb():
@@ -291,18 +275,34 @@ def init_db():
 @dp.message(F.text == "🪐 Админ-панель")
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
-    # Проверяем, входит ли ID пользователя в наш список
+
+    # убираем старую клавиатуру, которая осталась у людей в чате
+    tmp = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
+    try:
+        await tmp.delete()
+    except Exception:
+        pass
+
     if is_admin(message.from_user.id):
-        await message.answer("👑 Меню администратора загружено. Погнали работать! 🔥", reply_markup=get_admin_kb())
-    else:
-        await message.answer(
-            "👋 Привет! Это магазин одежды из Китая 🇨🇳\n\n"
-            "Нажмите [🛍 Каталог], чтобы выбрать вещи, или [🔍 Проверить статус], чтобы узнать, где ваша посылка. 👇",
-            reply_markup=get_client_kb(message.from_user.id)
+        text = (
+            "👑 <b>Logistic Center</b>\n"
+            "Панель администратора\n\n"
+            "Товары, посылки и интерес клиентов — всё в приложении 👇"
         )
-    # При /start предлагаем открыть приложение (при возврате в админ-панель не повторяем)
-    if WEBAPP_URL and (message.text or "").startswith("/start"):
-        await message.answer("Весь магазин в одном приложении: каталог, посылки и управление 👇", reply_markup=webapp_inline_kb())
+    else:
+        text = (
+            "📦 <b>Logistic Center</b>\n"
+            "Одежда и обувь из Китая 🇨🇳\n\n"
+            "Каталог, трекинг посылок и связь с менеджером — "
+            "всё в одном приложении 👇"
+        )
+
+    kb = webapp_inline_kb("🛍 Открыть магазин") if WEBAPP_URL else None
+    avatar = os.path.join(BASE_DIR, "avatar.jpg")
+    if os.path.isfile(avatar):
+        await message.answer_photo(FSInputFile(avatar), caption=text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
 @dp.message(F.text == BTN_APP)
