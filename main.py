@@ -290,15 +290,22 @@ async def start_cmd(message: Message, state: FSMContext):
             "всё в одном приложении 👇"
         )
 
+    # Старую клавиатуру под полем ввода снимаем один раз незаметным сообщением.
+    # Когда все пользователи нажмут /start хотя бы раз, этот блок можно удалить.
+    try:
+        tmp = await message.answer("🔄", reply_markup=ReplyKeyboardRemove())
+        await asyncio.sleep(1.5)
+        await tmp.delete()
+    except Exception:
+        pass
+
+    # Одно сообщение и одна кнопка
+    kb = webapp_inline_kb("🛍 Зайти в магазин") if WEBAPP_URL else None
     avatar = os.path.join(BASE_DIR, "avatar.jpg")
-    # ReplyKeyboardRemove в самом приветствии: старые кнопки под полем ввода исчезают
     if os.path.isfile(avatar):
-        await message.answer_photo(FSInputFile(avatar), caption=text, parse_mode="HTML",
-                                   reply_markup=ReplyKeyboardRemove())
+        await message.answer_photo(FSInputFile(avatar), caption=text, parse_mode="HTML", reply_markup=kb)
     else:
-        await message.answer(text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-    if WEBAPP_URL:
-        await message.answer("Нажмите, чтобы открыть магазин 👇", reply_markup=webapp_inline_kb("🛍 Открыть магазин"))
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
 @dp.message(F.text == BTN_APP)
