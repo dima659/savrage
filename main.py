@@ -276,13 +276,6 @@ def init_db():
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
 
-    # убираем старую клавиатуру, которая осталась у людей в чате
-    tmp = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
-    try:
-        await tmp.delete()
-    except Exception:
-        pass
-
     if is_admin(message.from_user.id):
         text = (
             "👑 <b>Logistic Center</b>\n"
@@ -297,12 +290,15 @@ async def start_cmd(message: Message, state: FSMContext):
             "всё в одном приложении 👇"
         )
 
-    kb = webapp_inline_kb("🛍 Открыть магазин") if WEBAPP_URL else None
     avatar = os.path.join(BASE_DIR, "avatar.jpg")
+    # ReplyKeyboardRemove в самом приветствии: старые кнопки под полем ввода исчезают
     if os.path.isfile(avatar):
-        await message.answer_photo(FSInputFile(avatar), caption=text, parse_mode="HTML", reply_markup=kb)
+        await message.answer_photo(FSInputFile(avatar), caption=text, parse_mode="HTML",
+                                   reply_markup=ReplyKeyboardRemove())
     else:
-        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+        await message.answer(text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+    if WEBAPP_URL:
+        await message.answer("Нажмите, чтобы открыть магазин 👇", reply_markup=webapp_inline_kb("🛍 Открыть магазин"))
 
 
 @dp.message(F.text == BTN_APP)
