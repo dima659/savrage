@@ -18,6 +18,12 @@ LOCAL_NAME_RE = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]{2,5}$")
 MEDIA_PREFIXES = ("p:", "v:", "lp:", "lv:")
 CATEGORIES = ["Обувь", "Одежда", "Аксессуары"]
 STAGES = ["Китай", "Склад", "В пути", "У вас"]
+STATES = {"": "В наличии", "soon": "Скоро", "sold": "Продан"}
+
+
+def clean_state(value) -> str:
+    value = (value or "").strip()
+    return value if value in STATES else ""
 
 
 def parse_stage(value, default: int = 2) -> int:
@@ -136,14 +142,34 @@ class Shop:
             );
             """
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', "
+            "full_name TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, blocked INTEGER DEFAULT 0)"
+        )
         # Миграции для уже существующих баз: добавляем новые поля, если их ещё нет
         cols = {r[1] for r in conn.execute("PRAGMA table_info(products)")}
         if "category" not in cols:
             conn.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''")
+        if "state" not in cols:
+            conn.execute("ALTER TABLE products ADD COLUMN state TEXT DEFAULT ''")
+        lcols = {r[1] for r in conn.execute("PRAGMA table_info(leads)")}
+        if "waiting" not in lcols:
+            conn.execute("ALTER TABLE leads ADD COLUMN waiting INTEGER DEFAULT 0")
         cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
         if "stage" not in cols:
             # старые посылки считаем «в пути»
             conn.execute("ALTER TABLE orders ADD COLUMN stage INTEGER DEFAULT 2")
+        # Аудитория рассылки: подтягиваем тех, кого бот уже знает по заявкам и посылкам
+        conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, full_name, first_seen, last_seen) "
+            "SELECT user_id, MAX(username), MAX(full_name), MIN(created), MAX(created) FROM leads "
+            "WHERE user_id IS NOT NULL GROUP BY user_id"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, first_seen, last_seen) "
+            "SELECT DISTINCT CAST(user_id AS INTEGER), '', '' FROM orders "
+            "WHERE user_id GLOB '[0-9]*' AND user_id != '0'"
+        )
         conn.commit()
         conn.close()
 
@@ -158,6 +184,7 @@ class Shop:
             "id": row["id"],
             "name": row["name"],
             "category": row["category"] or "",
+            "state": row["state"] or "",
             "description": row["description"] or "",
             "price": row["price"],
             "price_text": self.money(row["price"]),
@@ -190,28 +217,28 @@ class Shop:
         sizes = ", ".join(split_sizes(sizes or ""))
         return name, description, price, sizes
 
-    def create_product(self, name, description, price, sizes, media_items, category=""):
+    def create_product(self, name, description, price, sizes, media_items, category="", state=""):
         name, description, price, sizes = self.clean_fields(name, description, price, sizes)
         if len(media_items) > MAX_MEDIA:
             raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
         conn = self.connect()
         cur = conn.execute(
-            "INSERT INTO products (name, description, price, sizes, photo_id, active, category) VALUES (?, ?, ?, ?, ?, 1, ?)",
-            (name, description, price, sizes, ",".join(media_items), clean_category(category)),
+            "INSERT INTO products (name, description, price, sizes, photo_id, active, category, state) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (name, description, price, sizes, ",".join(media_items), clean_category(category), clean_state(state)),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM products WHERE id = ?", (cur.lastrowid,)).fetchone()
         conn.close()
         return row
 
-    def update_product(self, pid, name, description, price, sizes, media_items, category=""):
+    def update_product(self, pid, name, description, price, sizes, media_items, category="", state=""):
         name, description, price, sizes = self.clean_fields(name, description, price, sizes)
         if len(media_items) > MAX_MEDIA:
             raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
         conn = self.connect()
         conn.execute(
-            "UPDATE products SET name=?, description=?, price=?, sizes=?, photo_id=?, category=? WHERE id=?",
-            (name, description, price, sizes, ",".join(media_items), clean_category(category), pid),
+            "UPDATE products SET name=?, description=?, price=?, sizes=?, photo_id=?, category=?, state=? WHERE id=?",
+            (name, description, price, sizes, ",".join(media_items), clean_category(category), clean_state(state), pid),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
@@ -239,22 +266,68 @@ class Shop:
 
     # -------------------------------------------------------------- leads
     def add_lead(self, user_id, username, full_name, product_id, size=""):
-        """Записывает, что клиент нажал «Написать менеджеру». Возвращает (товар, название с размером)."""
+        """Записывает, что клиент нажал «Написать менеджеру» (или «Сообщить, когда появится»).
+        Возвращает (товар, название с размером) или None, если товар недоступен."""
         row = self.get_product(product_id)
-        if not row or not row["active"]:
+        if not row or not row["active"] or row["state"] == "sold":
             return None
+        soon = row["state"] == "soon"
         size = (size or "").strip()
         if size and size not in split_sizes(row["sizes"]):
             size = ""
-        label = row["name"] + (f" (размер {size})" if size else "")
+        label = row["name"] + (f" (размер {size})" if size else "") + (" — ждёт поступления" if soon else "")
         conn = self.connect()
+        if soon and conn.execute(
+            "SELECT 1 FROM leads WHERE user_id = ? AND product_id = ? AND waiting = 1", (user_id, product_id)
+        ).fetchone():
+            conn.close()
+            return row, label  # заявка уже есть, не дублируем
         conn.execute(
-            "INSERT INTO leads (user_id, username, full_name, product_id, product_name, created) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, username or "", full_name or "", product_id, label, now_msk()),
+            "INSERT INTO leads (user_id, username, full_name, product_id, product_name, created, waiting) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, username or "", full_name or "", product_id, label, now_msk(), 1 if soon else 0),
         )
         conn.commit()
         conn.close()
         return row, label
+
+    def waiting_users(self, product_id):
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM leads WHERE product_id = ? AND waiting = 1", (product_id,)
+        ).fetchall()
+        conn.close()
+        return [r["user_id"] for r in rows]
+
+    def clear_waiting(self, product_id):
+        conn = self.connect()
+        conn.execute("UPDATE leads SET waiting = 0 WHERE product_id = ?", (product_id,))
+        conn.commit()
+        conn.close()
+
+    # ------------------------------------------------------------- users
+    def touch_user(self, user_id, username="", full_name=""):
+        """Запоминает человека, открывшего бота или приложение (для рассылки)."""
+        conn = self.connect()
+        conn.execute(
+            "INSERT INTO users (user_id, username, full_name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, full_name = excluded.full_name, "
+            "last_seen = excluded.last_seen, blocked = 0",
+            (int(user_id), username or "", full_name or "", now_msk(), now_msk()),
+        )
+        conn.commit()
+        conn.close()
+
+    def list_audience(self):
+        conn = self.connect()
+        rows = conn.execute("SELECT user_id FROM users WHERE blocked = 0").fetchall()
+        conn.close()
+        return [r["user_id"] for r in rows]
+
+    def mark_blocked(self, user_id):
+        conn = self.connect()
+        conn.execute("UPDATE users SET blocked = 1 WHERE user_id = ?", (int(user_id),))
+        conn.commit()
+        conn.close()
 
     def list_leads(self, limit: int = 100):
         conn = self.connect()

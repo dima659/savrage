@@ -3,6 +3,7 @@
 Запускается в том же процессе, что и бот (см. main.py).
 Все запросы /api/* требуют заголовок X-Init-Data с подписанными данными Telegram.
 """
+import asyncio
 import glob
 import hashlib
 import html
@@ -13,6 +14,8 @@ import uuid
 from urllib.parse import quote
 
 from aiohttp import web
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from shop_logic import (
     LOCAL_NAME_RE, MAX_MEDIA, STAGES, normalize_media, validate_init_data,
@@ -31,7 +34,7 @@ def jerr(status: int, message: str):
 
 def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
                notify_admins, static_dir, upload_dir, cache_dir,
-               tagline="Одежда и обувь из Китая", currency="₽"):
+               tagline="Одежда и обувь из Китая", currency="₽", webapp_url=""):
     os.makedirs(upload_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
 
@@ -118,6 +121,104 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
             raise
         return fields, saved
 
+    # ---------------------------------------------------- рассылка «Новый дроп»
+    bc_state = {"running": False}
+
+    def drop_caption(p: dict, header: str) -> str:
+        lines = [f"<b>{html.escape(header)}</b>", "", f"<b>{html.escape(p['name'])}</b>", html.escape(p["price_text"])]
+        if p["sizes"]:
+            lines.append("Размеры: " + html.escape(", ".join(p["sizes"])))
+        if p["description"]:
+            lines += ["", html.escape(p["description"][:300])]
+        lines += ["", "Нажмите кнопку, чтобы открыть товар в приложении 👇"]
+        return "\n".join(lines)
+
+    def drop_markup():
+        if not webapp_url:
+            return None
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🛍 Зайти в магазин", web_app=WebAppInfo(url=webapp_url))
+        ]])
+
+    async def send_drop(uid: int, p: dict, header: str):
+        """Фото (или видео) товара с подписью и кнопкой. Если медиа не отправилось, шлём текст."""
+        caption, kb = drop_caption(p, header), drop_markup()
+        keys = p.get("media_keys") or []
+        if keys:
+            kind, ref = keys[0].split(":", 1)
+            try:
+                if kind in ("lp", "lv"):
+                    if not LOCAL_NAME_RE.match(ref):
+                        raise ValueError("bad name")
+                    source = FSInputFile(os.path.join(upload_dir, ref))
+                else:
+                    source = ref
+                if kind in ("p", "lp"):
+                    await bot.send_photo(uid, source, caption=caption, parse_mode="HTML", reply_markup=kb)
+                else:
+                    await bot.send_video(uid, source, caption=caption, parse_mode="HTML", reply_markup=kb)
+                return
+            except (TelegramForbiddenError, TelegramRetryAfter):
+                raise
+            except Exception as e:
+                log.warning("Медиа для рассылки не отправилось, шлём текст: %s", e)
+        await bot.send_message(uid, caption, parse_mode="HTML", reply_markup=kb)
+
+    async def deliver(ids, p: dict, header: str):
+        """Отправляет всем из списка. Возвращает (доставлено, заблокировали бота, ошибок)."""
+        sent = blocked = failed = 0
+        for uid in ids:
+            for _ in range(3):
+                try:
+                    await send_drop(uid, p, header)
+                    sent += 1
+                    break
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(e.retry_after + 1)
+                except TelegramForbiddenError:
+                    blocked += 1
+                    shop.mark_blocked(uid)
+                    break
+                except Exception as e:
+                    log.warning("Рассылка: не доставлено %s: %s", uid, e)
+                    failed += 1
+                    break
+            else:
+                failed += 1
+            await asyncio.sleep(0.05)  # ~20 сообщений в секунду, в пределах лимитов Telegram
+        return sent, blocked, failed
+
+    async def run_broadcast(ids, p: dict, admin_id: int, test: bool):
+        header = "⏳ Скоро в магазине" if p["state"] == "soon" else "🔥 Новый дроп"
+        if not test:
+            bc_state["running"] = True
+        try:
+            sent, blocked, failed = await deliver(ids, p, header)
+        except Exception:
+            log.exception("Ошибка рассылки")
+            sent = blocked = failed = 0
+        finally:
+            bc_state["running"] = False if not test else bc_state["running"]
+        try:
+            if test:
+                text = "🧪 Тест отправлен. Так увидят рассылку получатели." if sent else "⚠️ Тест не отправился. Откройте чат с ботом и нажмите /start."
+            else:
+                text = (f"📣 Рассылка «{html.escape(p['name'])}» завершена\n"
+                        f"✅ Доставлено: {sent}\n🚫 Заблокировали бота: {blocked}\n⚠️ Не доставлено: {failed}")
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            pass
+
+    async def notify_waiting(pid: int):
+        """Товар из «Скоро» стал доступен: пишем всем, кто оставил заявку."""
+        row = shop.get_product(pid)
+        if not row or not row["active"] or row["state"] == "sold":
+            return
+        ids = shop.waiting_users(pid)
+        if ids:
+            await deliver(ids, shop.product_dict(row), "🔔 Товар, которого вы ждали, уже в магазине")
+        shop.clear_waiting(pid)
+
     def product_id(request) -> int:
         try:
             return int(request.match_info["id"])
@@ -165,6 +266,10 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
     # ------------------------------------------------------------- client API
     async def me(request):
         u = request["user"]
+        try:
+            shop.touch_user(u["id"], u.get("username"), full_name(u))
+        except Exception:
+            log.exception("Не удалось запомнить пользователя")
         return web.json_response({
             "id": u["id"],
             "name": full_name(u) or u.get("username") or "Гость",
@@ -192,6 +297,14 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
         if not found:
             return jerr(404, "Этого товара уже нет в наличии")
         row, label = found
+        soon = row["state"] == "soon"
+        if soon:
+            if not request["is_admin"]:
+                await notify_admins(
+                    f"⏳ Ждут поступления «{html.escape(row['name'])}»:\n{user_label(u['id'], u.get('username'), name)}",
+                    parse_mode="HTML",
+                )
+            return web.json_response({"waiting": True})
         hello = f"Здравствуйте! Меня интересует: {label} ({shop.money(row['price'])})"
         url = f"https://t.me/{manager_username}?text={quote(hello)}"
         if not request["is_admin"]:
@@ -217,7 +330,7 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
         fields, saved = await read_form(request)
         try:
             row = shop.create_product(fields.get("name"), fields.get("description"),
-                                      fields.get("price"), fields.get("sizes"), saved, fields.get("category"))
+                                      fields.get("price"), fields.get("sizes"), saved, fields.get("category"), fields.get("state"))
         except Exception:
             remove_local(saved)
             raise
@@ -243,11 +356,13 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
             if len(media_items) > MAX_MEDIA:
                 raise ValueError(f"Максимум {MAX_MEDIA} фото и видео на товар")
             row = shop.update_product(pid, fields.get("name"), fields.get("description"),
-                                      fields.get("price"), fields.get("sizes"), media_items, fields.get("category"))
+                                      fields.get("price"), fields.get("sizes"), media_items, fields.get("category"), fields.get("state"))
         except Exception:
             remove_local(saved)
             raise
         remove_local([i for i in old_items if i not in media_items])
+        if old["state"] == "soon" and row["state"] != "soon":
+            asyncio.create_task(notify_waiting(pid))
         return web.json_response(shop.product_dict(row))
 
     async def product_toggle(request):
@@ -262,6 +377,32 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
             raise web.HTTPNotFound()
         remove_local(items)
         return web.json_response({"ok": True})
+
+    async def product_broadcast(request):
+        pid = product_id(request)
+        try:
+            d = await request.json()
+        except Exception:
+            d = {}
+        row = shop.get_product(pid)
+        if not row:
+            raise web.HTTPNotFound()
+        if not row["active"]:
+            raise ValueError("Сначала покажите товар в каталоге")
+        if row["state"] == "sold":
+            raise ValueError("Проданный товар рассылать нельзя")
+        p = shop.product_dict(row)
+        me_id = request["user"]["id"]
+        if d.get("mode") == "test":
+            ids, test = [me_id], True
+        else:
+            if bc_state["running"]:
+                raise ValueError("Рассылка уже идёт, подождите её завершения")
+            ids, test = shop.list_audience(), False
+            if not ids:
+                raise ValueError("Пока некому отправлять: бота ещё никто не открывал")
+        asyncio.create_task(run_broadcast(ids, p, me_id, test))
+        return web.json_response({"started": True, "total": len(ids)})
 
     async def orders_list(request):
         return web.json_response({"items": shop.list_orders()})
@@ -324,6 +465,7 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
     r.add_post("/api/admin/product/{id}", product_update)
     r.add_post("/api/admin/product/{id}/toggle", product_toggle)
     r.add_delete("/api/admin/product/{id}", product_delete)
+    r.add_post("/api/admin/product/{id}/broadcast", product_broadcast)
     r.add_get("/api/admin/orders", orders_list)
     r.add_post("/api/admin/orders", order_add)
     r.add_delete("/api/admin/orders", orders_delete_q)

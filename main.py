@@ -271,10 +271,32 @@ def init_db():
 # =====================================================================
 
 # --- ОБЩИЕ КОМАНДЫ ---
+def track_user(user):
+    """Запоминаем всех, кто нажал /start, чтобы потом можно было сделать рассылку."""
+    try:
+        now = datetime.now(timezone(timedelta(hours=3))).strftime("%d.%m %H:%M")
+        conn = sqlite3.connect(get_db_path())
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT DEFAULT '', "
+            "full_name TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, blocked INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO users (user_id, username, full_name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, full_name = excluded.full_name, "
+            "last_seen = excluded.last_seen, blocked = 0",
+            (user.id, user.username or "", user.full_name or "", now, now),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ Не удалось запомнить пользователя: {e}")
+
+
 @dp.message(Command("start"))
 @dp.message(F.text == "🪐 Админ-панель")
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
+    track_user(message.from_user)
 
     if is_admin(message.from_user.id):
         text = (
@@ -1001,6 +1023,7 @@ async def start_webapp():
         manager_username=MANAGER_USERNAME, store_name=SHOP_NAME, tagline=SHOP_TAGLINE, currency=CURRENCY_SIGN,
         notify_admins=notify_admins, static_dir=static_dir,
         upload_dir=upload_dir(), cache_dir=os.path.join(data_dir(), "cache"),
+        webapp_url=WEBAPP_URL,
     )
     runner = web.AppRunner(app)
     await runner.setup()
