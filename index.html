@@ -377,6 +377,16 @@ h1,h2,h3,p{margin:0}
 .pill-sold{box-shadow:inset 0 0 0 1.5px var(--muted);color:var(--muted)}
 .item .t .pill{margin-left:0}
 .lead .pill{flex:none}
+
+/* кнопка-меню фильтров */
+.searchbar{display:flex;align-items:center;gap:10px}
+.fbtn{position:relative;flex:none;width:46px;height:46px;border-radius:50%;border:0;background:var(--sr);box-shadow:inset 0 0 0 1px var(--line);color:var(--ink);display:flex;align-items:center;justify-content:center}
+.fbtn .ico{width:22px;height:22px}
+.fbtn.on{background:var(--cta);color:var(--on-cta);box-shadow:none}
+.fdot{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#8EC1E8;color:#0C0908;font:800 11px/18px Manrope,sans-serif;font-style:normal;text-align:center}
+.fwrap{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.fc .ico{width:12px;height:12px;vertical-align:-1px;margin-left:2px}
+.lead .pill{margin-left:6px}
 </style>
 </head>
 <body>
@@ -414,6 +424,7 @@ const I = {
   image:'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="1.7"/><path d="M4 18l5-5 4 4 3-3 4 4"/>',
   truck:'<path d="M2 6h11v10H2zM13 10h4l3 3v3h-7"/><circle cx="6.5" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/>',
   chevron:'<path d="M9 6l6 6-6 6"/>',
+  burger:'<path d="M4 7h16M4 12h16M4 17h16"/>',
   edit:'<path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/>',
   tag:'<path d="M3 12V4h8l10 10-8 8L3 12z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
   alert:'<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5v.01"/>',
@@ -552,14 +563,17 @@ async function renderCatalog() {
   view.innerHTML = `
     <header class="hero"><h1>Logistic<br>Center</h1><p>${esc(S.me.store)} · ${esc(S.me.tagline || 'Одежда и обувь из Китая')}</p></header>
     <div class="stripe"></div>
-    <div class="searchbar"><label class="search">${ico('search')}<input id="q" type="search" placeholder="Поиск по каталогу" value="${esc(S.search)}" autocomplete="off"></label></div>
+    <div class="searchbar"><label class="search">${ico('search')}<input id="q" type="search" placeholder="Поиск по каталогу" value="${esc(S.search)}" autocomplete="off"></label><button type="button" class="fbtn" id="fbtn" aria-label="Фильтры">${ico('burger')}<i class="fdot" id="fdot" hidden></i></button></div>
     <div id="filters" class="filters"></div>
     <section id="grid" class="grid">${skeletons(6)}</section>`;
   $('#q').addEventListener('input', e => { S.search = e.target.value; drawGrid(); });
+  $('#fbtn').addEventListener('click', () => { haptic('light'); openFilters(); });
   $('#filters').addEventListener('click', e => {
-    const b = e.target.closest('[data-k]'); if (!b) return;
-    const k = b.dataset.k, v = b.dataset.v;
-    S[k] = (k === 'size' && S.size === v) ? '' : v;
+    const b = e.target.closest('[data-x]'); if (!b) return;
+    const x = b.dataset.x;
+    if (x === 'all' || x === 'cat') S.cat = '';
+    if (x === 'all' || x === 'size') S.size = '';
+    if (x === 'all' || x === 'sort') S.sort = 'new';
     haptic('light'); drawFilters(); drawGrid();
   });
   $('#grid').addEventListener('click', e => {
@@ -575,12 +589,41 @@ function drawFilters() {
   const sizes = Array.from(new Set(S.products.flatMap(p => p.sizes)));
   if (S.cat && !cats.includes(S.cat)) S.cat = '';
   if (S.size && !sizes.includes(S.size)) S.size = '';
-  const chip = (k, v, label, on) => `<button type="button" class="fc ${on ? 'on' : ''}" data-k="${k}" data-v="${esc(v)}">${esc(label)}</button>`;
-  const rows = [];
-  if (cats.length) rows.push(`<div class="fr">${chip('cat', '', 'Всё', !S.cat)}${cats.map(c => chip('cat', c, c, S.cat === c)).join('')}</div>`);
-  if (sizes.length) rows.push(`<div class="fr"><span class="fl">Размер</span>${sizes.map(s => chip('size', s, s, S.size === s)).join('')}</div>`);
-  if (S.products.length > 1) rows.push(`<div class="fr"><span class="fl">Цена</span>${chip('sort', 'new', 'Сначала новые', S.sort === 'new')}${chip('sort', 'asc', 'Дешевле', S.sort === 'asc')}${chip('sort', 'desc', 'Дороже', S.sort === 'desc')}</div>`);
-  box.innerHTML = rows.join('');
+  const act = [];
+  if (S.cat) act.push(['cat', S.cat]);
+  if (S.size) act.push(['size', 'Размер ' + S.size]);
+  if (S.sort !== 'new') act.push(['sort', S.sort === 'asc' ? 'Сначала дешевле' : 'Сначала дороже']);
+  box.innerHTML = act.length ? `<div class="fr">${act.map(([k, l]) => `<button type="button" class="fc on" data-x="${k}" aria-label="Убрать фильтр: ${esc(l)}">${esc(l)} ${ico('close', 'sm')}</button>`).join('')}${act.length > 1 ? '<button type="button" class="fc" data-x="all">Сбросить всё</button>' : ''}</div>` : '';
+  const fb = $('#fbtn'), dot = $('#fdot');
+  if (fb) fb.classList.toggle('on', act.length > 0);
+  if (dot) { dot.hidden = !act.length; dot.textContent = act.length; }
+}
+function openFilters() {
+  const cats = CATS.filter(c => S.products.some(p => p.category === c));
+  const sizes = Array.from(new Set(S.products.flatMap(p => p.sizes)));
+  let d = { cat: S.cat, size: S.size, sort: S.sort };
+  const count = () => S.products.filter(p => (!d.cat || p.category === d.cat) && (!d.size || p.sizes.includes(d.size))).length;
+  const chips = (k, items) => items.map(([v, l]) => `<button type="button" class="fc ${d[k] === v ? 'on' : ''}" data-k="${k}" data-v="${esc(v)}">${esc(l)}</button>`).join('');
+  const body = () => `
+    ${cats.length ? `<h3 class="h3">Категория</h3><div class="fwrap">${chips('cat', cats.map(c => [c, c]))}</div>` : ''}
+    ${sizes.length ? `<h3 class="h3">Размер</h3><div class="fwrap">${chips('size', sizes.map(s => [s, s]))}</div>` : ''}
+    <h3 class="h3">Цена</h3><div class="fwrap">${chips('sort', [['new', 'Сначала новые'], ['asc', 'Сначала дешевле'], ['desc', 'Сначала дороже']])}</div>`;
+  const ctl = openSheet(`
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Фильтры</h2><button class="xbtn" data-close aria-label="Закрыть">${ico('close', 'sm')}</button></div>
+    <div class="sheet-body" id="fbody"></div>
+    <div class="sheet-foot" style="display:flex;gap:10px"><button class="btn" id="freset" type="button" style="flex:1">Сбросить</button><button class="btn primary" id="fapply" type="button" style="flex:2"></button></div>`);
+  const el = ctl.el;
+  const upd = () => { $('#fbody', el).innerHTML = body(); $('#fapply', el).textContent = 'Показать (' + count() + ')'; };
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-k]'); if (!b) return;
+    const k = b.dataset.k, v = b.dataset.v;
+    d[k] = k === 'sort' ? v : (d[k] === v ? '' : v);
+    haptic('light'); upd();
+  });
+  $('#freset', el).addEventListener('click', () => { S.cat = ''; S.size = ''; S.sort = 'new'; haptic('light'); ctl.close(); drawFilters(); drawGrid(); });
+  $('#fapply', el).addEventListener('click', () => { S.cat = d.cat; S.size = d.size; S.sort = d.sort; ctl.close(); drawFilters(); drawGrid(); });
+  upd();
 }
 function drawGrid() {
   const g = $('#grid'); if (!g) return;
@@ -595,7 +638,14 @@ function drawGrid() {
   if (list.length) S.fresh = false;
 }
 
+const viewedIds = new Set();
+function trackView(p) {
+  if (!S.me || S.me.is_admin || viewedIds.has(p.id)) return;
+  viewedIds.add(p.id);
+  api('/api/view', { method: 'POST', body: { product_id: p.id } }).catch(() => {});
+}
 function openProduct(p) {
+  trackView(p);
   const slides = p.media.length ? p.media.map(m => m.type === 'video'
     ? `<div class="slide"><video src="${esc(m.url)}#t=0.1" controls playsinline preload="metadata"></video></div>`
     : `<div class="slide"><img src="${esc(m.url)}" alt=""></div>`).join('')
@@ -1011,10 +1061,10 @@ async function adminLeads() {
     pane().innerHTML = d.items.length ? `<div class="list">${d.items.map(l => `
       <div class="lead"><div class="av">${esc(initial(l.full_name || l.username))}</div>
         <div style="flex:1;min-width:0"><div style="font-weight:700">${esc(l.full_name || 'Без имени')}${l.username ? ` <span style="color:var(--muted);font-weight:500">@${esc(l.username)}</span>` : ''}</div>
-          <div style="margin-top:2px">${esc(l.product_name)}</div>
+          <div style="margin-top:2px">${esc(l.product_name)} ${l.kind === 'view' ? `<span class="pill pill-sold">просмотр${l.views > 1 ? ' ×' + l.views : ''}</span>` : (l.waiting ? '' : '<span class="pill pill-soon">написал</span>')}</div>
           <div class="tmeta">${esc(l.created)}, ID ${l.user_id}</div></div>
         <button class="mini" data-u="${esc(l.username)}" data-id="${l.user_id}" aria-label="${l.username ? 'Открыть чат' : 'Скопировать ID'}">${ico(l.username ? 'chat' : 'copy', 'sm')}</button>
-      </div>`).join('')}</div>` : emptyState('eye', 'Пока никого', 'Здесь появятся клиенты, которые нажали «Написать менеджеру»');
+      </div>`).join('')}</div>` : emptyState('eye', 'Пока никого', 'Здесь появятся клиенты, которые открыли товар или нажали «Написать менеджеру»');
     $$('[data-u]', pane()).forEach(b => b.addEventListener('click', () => b.dataset.u ? openChat('https://t.me/' + b.dataset.u) : copyText(b.dataset.id)));
   } catch (e) { failed(e); }
 }

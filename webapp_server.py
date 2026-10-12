@@ -336,6 +336,18 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
             )
         return web.json_response({"url": url})
 
+    async def view_product(request):
+        """Клиент открыл товар: запоминаем интерес (админов не считаем)."""
+        data = await request.json()
+        try:
+            pid = int(data.get("product_id"))
+        except (TypeError, ValueError):
+            raise ValueError("Не указан товар")
+        if not request["is_admin"]:
+            u = request["user"]
+            shop.add_view(u["id"], u.get("username"), full_name(u), pid)
+        return web.json_response({"ok": True})
+
     async def tracking(request):
         q = request.query.get("q", "").strip()[:64]
         own_id = str(request["user"]["id"])
@@ -490,6 +502,7 @@ def create_app(*, bot, token, admin_ids, shop, manager_username, store_name,
     r.add_get("/api/me", me)
     r.add_get("/api/products", products)
     r.add_post("/api/lead", lead)
+    r.add_post("/api/view", view_product)
     r.add_get("/api/tracking", tracking)
     r.add_post("/api/admin/product", product_create)
     r.add_post("/api/admin/product/{id}", product_update)

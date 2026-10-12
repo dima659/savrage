@@ -172,6 +172,10 @@ class Shop:
         lcols = {r[1] for r in conn.execute("PRAGMA table_info(leads)")}
         if "waiting" not in lcols:
             conn.execute("ALTER TABLE leads ADD COLUMN waiting INTEGER DEFAULT 0")
+        if "kind" not in lcols:
+            conn.execute("ALTER TABLE leads ADD COLUMN kind TEXT DEFAULT 'chat'")
+        if "views" not in lcols:
+            conn.execute("ALTER TABLE leads ADD COLUMN views INTEGER DEFAULT 1")
         cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
         if "stage" not in cols:
             # старые посылки считаем «в пути»
@@ -398,9 +402,39 @@ class Shop:
         conn.commit()
         conn.close()
 
-    def list_leads(self, limit: int = 100):
+    def add_view(self, user_id, username, full_name, product_id):
+        """Клиент просто открыл товар. Одна строка на человека и товар: повторный просмотр
+        поднимает её наверх списка и увеличивает счётчик."""
+        row = self.get_product(product_id)
+        if not row or not row["active"]:
+            return False
         conn = self.connect()
-        rows = conn.execute("SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        prev = conn.execute(
+            "SELECT id, views FROM leads WHERE user_id = ? AND product_id = ? AND kind = 'view'",
+            (user_id, product_id),
+        ).fetchone()
+        views = 1
+        if prev:
+            views = (prev["views"] or 1) + 1
+            conn.execute("DELETE FROM leads WHERE id = ?", (prev["id"],))
+        conn.execute(
+            "INSERT INTO leads (user_id, username, full_name, product_id, product_name, created, waiting, kind, views) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, 'view', ?)",
+            (user_id, username or "", full_name or "", product_id, row["name"], now_msk(), views),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_leads(self, limit: int = 100):
+        """«Интерес»: просмотры и обращения. Просмотр скрываем, если по этому товару человек уже написал."""
+        conn = self.connect()
+        rows = conn.execute(
+            "SELECT * FROM leads WHERE NOT (kind = 'view' AND EXISTS ("
+            "SELECT 1 FROM leads l2 WHERE l2.user_id = leads.user_id AND l2.product_id = leads.product_id AND l2.kind != 'view'"
+            ")) ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
 
