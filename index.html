@@ -387,6 +387,7 @@ h1,h2,h3,p{margin:0}
 .fwrap{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
 .fc .ico{width:12px;height:12px;vertical-align:-1px;margin-left:2px}
 .lead .pill{margin-left:6px}
+.fc:disabled{opacity:.4}
 </style>
 </head>
 <body>
@@ -567,14 +568,14 @@ async function renderCatalog() {
     <div id="filters" class="filters"></div>
     <section id="grid" class="grid">${skeletons(6)}</section>`;
   $('#q').addEventListener('input', e => { S.search = e.target.value; drawGrid(); });
-  $('#fbtn').addEventListener('click', () => { haptic('light'); openFilters(); });
+  $('#fbtn').addEventListener('click', () => openFilters());
   $('#filters').addEventListener('click', e => {
     const b = e.target.closest('[data-x]'); if (!b) return;
     const x = b.dataset.x;
     if (x === 'all' || x === 'cat') S.cat = '';
     if (x === 'all' || x === 'size') S.size = '';
     if (x === 'all' || x === 'sort') S.sort = 'new';
-    haptic('light'); drawFilters(); drawGrid();
+    drawFilters(); drawGrid();
   });
   $('#grid').addEventListener('click', e => {
     const c = e.target.closest('.card[data-id]'); if (!c) return;
@@ -599,13 +600,16 @@ function drawFilters() {
   if (dot) { dot.hidden = !act.length; dot.textContent = act.length; }
 }
 function openFilters() {
-  const cats = CATS.filter(c => S.products.some(p => p.category === c));
+  const cats = CATS;
   const sizes = Array.from(new Set(S.products.flatMap(p => p.sizes)));
   let d = { cat: S.cat, size: S.size, sort: S.sort };
   const count = () => S.products.filter(p => (!d.cat || p.category === d.cat) && (!d.size || p.sizes.includes(d.size))).length;
-  const chips = (k, items) => items.map(([v, l]) => `<button type="button" class="fc ${d[k] === v ? 'on' : ''}" data-k="${k}" data-v="${esc(v)}">${esc(l)}</button>`).join('');
+  const chips = (k, items) => items.map(([v, l]) => {
+    const empty = k === 'cat' && !S.products.some(p => p.category === v);  // в категории пока нет товаров
+    return `<button type="button" class="fc ${d[k] === v ? 'on' : ''}" data-k="${k}" data-v="${esc(v)}" ${empty ? 'disabled' : ''}>${esc(l)}</button>`;
+  }).join('');
   const body = () => `
-    ${cats.length ? `<h3 class="h3">Категория</h3><div class="fwrap">${chips('cat', cats.map(c => [c, c]))}</div>` : ''}
+    <h3 class="h3">Категория</h3><div class="fwrap">${chips('cat', cats.map(c => [c, c]))}</div>
     ${sizes.length ? `<h3 class="h3">Размер</h3><div class="fwrap">${chips('size', sizes.map(s => [s, s]))}</div>` : ''}
     <h3 class="h3">Цена</h3><div class="fwrap">${chips('sort', [['new', 'Сначала новые'], ['asc', 'Сначала дешевле'], ['desc', 'Сначала дороже']])}</div>`;
   const ctl = openSheet(`
@@ -619,9 +623,9 @@ function openFilters() {
     const b = e.target.closest('[data-k]'); if (!b) return;
     const k = b.dataset.k, v = b.dataset.v;
     d[k] = k === 'sort' ? v : (d[k] === v ? '' : v);
-    haptic('light'); upd();
+    upd();
   });
-  $('#freset', el).addEventListener('click', () => { S.cat = ''; S.size = ''; S.sort = 'new'; haptic('light'); ctl.close(); drawFilters(); drawGrid(); });
+  $('#freset', el).addEventListener('click', () => { S.cat = ''; S.size = ''; S.sort = 'new'; ctl.close(); drawFilters(); drawGrid(); });
   $('#fapply', el).addEventListener('click', () => { S.cat = d.cat; S.size = d.size; S.sort = d.sort; ctl.close(); drawFilters(); drawGrid(); });
   upd();
 }
@@ -838,7 +842,7 @@ function openProductEditor(p) {
   let cat = p ? (p.category || '') : '';
   let pstate = p ? (p.state || '') : '';
   $$('#statechips .chip', el).forEach(c => c.addEventListener('click', () => {
-    pstate = c.dataset.k; haptic('light');
+    pstate = c.dataset.k;
     $$('#statechips .chip', el).forEach(x => x.classList.toggle('sel', x === c));
   }));
   const broadcast = async mode => {
@@ -853,7 +857,7 @@ function openProductEditor(p) {
   bt && bt.addEventListener('click', () => broadcast('test'));
   ba && ba.addEventListener('click', () => broadcast('all'));
   $$('#catchips .chip', el).forEach(c => c.addEventListener('click', () => {
-    cat = cat === c.dataset.c ? '' : c.dataset.c; haptic('light');
+    cat = cat === c.dataset.c ? '' : c.dataset.c;
     $$('#catchips .chip', el).forEach(x => x.classList.toggle('sel', x.dataset.c === cat));
   }));
 
@@ -981,7 +985,7 @@ async function openOrderCreate() {
   $$('#people .chip', el).forEach(c => c.addEventListener('click', () => { f.uid.value = c.dataset.id; haptic('light'); $$('#people .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
   f.prod.addEventListener('change', () => { $('#customw', el).hidden = f.prod.value !== '__custom'; });
   let stage = 0;
-  $$('#stgchips .chip', el).forEach(c => c.addEventListener('click', () => { stage = +c.dataset.st; haptic('light'); $$('#stgchips .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
+  $$('#stgchips .chip', el).forEach(c => c.addEventListener('click', () => { stage = +c.dataset.st; $$('#stgchips .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
   $$('#stchips .chip', el).forEach(c => c.addEventListener('click', () => { f.status.value = c.dataset.s; haptic('light'); }));
   $('#osave', el).addEventListener('click', async e => {
     const btn = e.currentTarget;
@@ -1007,7 +1011,7 @@ function openOrderEdit(o) {
     <div class="sheet-foot"><div class="stack-h" style="margin-bottom:10px"><button class="btn danger" id="odel" type="button">${ico('trash', 'sm')} Удалить</button></div><button class="btn primary big" id="osave" type="button">Сохранить</button><p class="cta-note">Клиент получит уведомление, если указан его ID</p></div>`, { cls: 'tall' });
   const el = ctl.el, f = $('#of', el);
   let stage = o.stage;
-  $$('#stgchips .chip', el).forEach(c => c.addEventListener('click', () => { stage = +c.dataset.st; haptic('light'); $$('#stgchips .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
+  $$('#stgchips .chip', el).forEach(c => c.addEventListener('click', () => { stage = +c.dataset.st; $$('#stgchips .chip', el).forEach(x => x.classList.toggle('sel', x === c)); }));
   $$('#stchips .chip', el).forEach(c => c.addEventListener('click', () => { f.status.value = c.dataset.s; haptic('light'); }));
   $('#osave', el).addEventListener('click', async e => {
     const btn = e.currentTarget; btn.disabled = true;
