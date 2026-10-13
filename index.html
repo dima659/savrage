@@ -388,6 +388,13 @@ h1,h2,h3,p{margin:0}
 .fc .ico{width:12px;height:12px;vertical-align:-1px;margin-left:2px}
 .lead .pill{margin-left:6px}
 .fc:disabled{opacity:.4}
+
+/* ровная сетка: все фото начинаются на одной линии, подписи одинаковой высоты */
+.grid{align-items:start}
+.card{display:flex;flex-direction:column;justify-content:flex-start;align-self:start}
+.card .pw{width:100%}
+.nm{min-height:2.5em}
+.sz{min-height:1.5em}
 </style>
 </head>
 <body>
@@ -584,10 +591,25 @@ async function renderCatalog() {
   try { await loadProducts(); drawFilters(); drawGrid(); }
   catch (e) { if (e.message !== 'unauthorized') $('#grid').innerHTML = emptyState('alert', 'Не удалось загрузить каталог', e.message); }
 }
+/* размеры в фильтре: сначала буквенные (XS, S, M, L, XL…), потом числовые по возрастанию, потом остальные */
+const SIZE_LADDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', '4XL', '5XL'];
+const SIZE_ALIAS = { '2XL': 'XXL', '3XL': 'XXXL' };
+function sizeKey(s) {
+  const u = String(s).trim().toUpperCase().replace(/\s+/g, '');
+  const i = SIZE_LADDER.indexOf(SIZE_ALIAS[u] || u);
+  if (i >= 0) return [0, i, ''];
+  const n = parseFloat(u.replace(',', '.'));
+  if (/^\d/.test(u) && !isNaN(n)) return [1, n, u];
+  return [2, 0, u];
+}
+function allSizes() {
+  return Array.from(new Set(S.products.flatMap(p => p.sizes)))
+    .sort((x, y) => { const a = sizeKey(x), b = sizeKey(y); return a[0] - b[0] || a[1] - b[1] || a[2].localeCompare(b[2]); });
+}
 function drawFilters() {
   const box = $('#filters'); if (!box) return;
   const cats = CATS.filter(c => S.products.some(p => p.category === c));
-  const sizes = Array.from(new Set(S.products.flatMap(p => p.sizes)));
+  const sizes = allSizes();
   if (S.cat && !cats.includes(S.cat)) S.cat = '';
   if (S.size && !sizes.includes(S.size)) S.size = '';
   const act = [];
@@ -601,7 +623,7 @@ function drawFilters() {
 }
 function openFilters() {
   const cats = CATS;
-  const sizes = Array.from(new Set(S.products.flatMap(p => p.sizes)));
+  const sizes = allSizes();
   let d = { cat: S.cat, size: S.size, sort: S.sort };
   const count = () => S.products.filter(p => (!d.cat || p.category === d.cat) && (!d.size || p.sizes.includes(d.size))).length;
   const chips = (k, items) => items.map(([v, l]) => {
